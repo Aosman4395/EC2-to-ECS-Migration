@@ -1,0 +1,25 @@
+# Copy this file to terraform.tfvars and customize
+
+aws_region   = "us-east-1"
+project_name = "legacy-api"
+environment  = "production"
+
+# EC2 Configuration
+instance_type = "t3.micro"
+
+# SSH Access (create a key pair in AWS Console first)
+key_pair_name = "my-keypair"
+
+# Network Access
+allowed_cidr_blocks = ["0.0.0.0/0"]  # Restrict this in production!
+
+# Optional: Route53 Configuration for DNS
+# domain_name     = "api.example.com"
+# route53_zone_id = "Z1234567890ABC"
+
+# Tags
+tags = {
+  Owner       = "devops-team"
+  CostCenter  = "engineering"
+  Application = "legacy-api"
+}
