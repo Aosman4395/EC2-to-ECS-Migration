@@ -23,8 +23,8 @@ apt-get upgrade -y -qq
 # Install required system packages
 log "Installing system packages..."
 apt-get install -y -qq \
-    python3.11 \
-    python3.11-venv \
+    python3 \
+    python3-venv \
     python3-pip \
     nginx \
     git \
@@ -47,7 +47,7 @@ log "Application files should be in $APP_DIR/app/"
 # Create Python virtual environment
 log "Setting up Python virtual environment..."
 cd "$APP_DIR"
-python3.11 -m venv venv
+python3 -m venv venv
 source venv/bin/activate
 
 # Install Python dependencies

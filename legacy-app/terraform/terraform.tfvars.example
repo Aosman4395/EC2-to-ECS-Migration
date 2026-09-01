@@ -1,6 +1,6 @@
 # Copy this file to terraform.tfvars and customize
 
-aws_region   = "us-east-1"
+aws_region   = "eu-west-2"
 project_name = "legacy-api"
 environment  = "production"
 

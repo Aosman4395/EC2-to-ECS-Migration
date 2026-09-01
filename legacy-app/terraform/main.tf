@@ -273,7 +273,7 @@ S3_KEY="app.zip"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get upgrade -y -qq
-apt-get install -y -qq awscli python3.11 python3.11-venv python3-pip nginx git curl wget unzip
+apt-get install -y -qq awscli python3 python3-venv python3-pip nginx git curl wget unzip
 
 # Create application directory
 mkdir -p $APP_DIR
@@ -302,7 +302,7 @@ echo "Application setup completed at $(date)" >> /var/log/user-data.log
 
 # EC2 Instance
 resource "aws_instance" "app" {
-  ami                    = data.aws_ami.amazon_linux.id
+  ami                    = "ami-0224ce6f9504665ee"
   instance_type          = var.instance_type
   subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.ec2.id]
