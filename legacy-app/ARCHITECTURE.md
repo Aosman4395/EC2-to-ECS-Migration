@@ -101,9 +101,9 @@
 - **Security Groups**:
   - Inbound: HTTP (80), HTTPS (443), SSH (22) from allowed CIDRs
   - Outbound: All traffic allowed
-  
+
 - **Network Security**:
-  - EC2 in public subnet (for simplicity)
+  - EC2 in public subnet
   - Security group restricts access by CIDR
 
 - **IAM**:
@@ -126,14 +126,14 @@
 
 2. **Application Startup**:
    ```
-   EC2 Boot → User-Data Script → Download App from S3 → Extract → 
-   Setup Python Env → Install Dependencies → Configure Systemd → 
+   EC2 Boot → User-Data Script → Download App from S3 → Extract →
+   Setup Python Env → Install Dependencies → Configure Systemd →
    Start Gunicorn → Configure Nginx → Start Nginx → Ready
    ```
 
 3. **Deployment Flow**:
    ```
-   Terraform Apply → Create S3 Bucket → Upload App Zip → 
+   Terraform Apply → Create S3 Bucket → Upload App Zip →
    Create EC2 Instance → User-Data Executes → App Running
    ```
 
@@ -184,7 +184,7 @@
 
 ## Target Architecture (ECS Fargate)
 
-After migration, the architecture will be:
+The migration target is a highly available ECS Fargate platform:
 
 ```
 ┌─────────────┐
@@ -255,12 +255,12 @@ After migration, the architecture will be:
 
 ## Migration Strategy
 
-Students should plan:
+The migration will be delivered in controlled stages:
 
-1. **Containerization**: Create Dockerfile for Flask app
-2. **ECS Infrastructure**: Terraform for ECS cluster, service, ALB
-3. **CI/CD Pipeline**: GitHub Actions with OIDC
-4. **Observability**: CloudWatch logs, metrics, alarms
-5. **Cutover Plan**: Zero-downtime migration strategy
+1. **Containerization**: Package the Flask application as a production-ready container image
+2. **ECS Infrastructure**: Provision the ECS cluster, Fargate service and ALB using Terraform
+3. **CI/CD Pipeline**: Implement GitHub Actions with AWS OIDC authentication
+4. **Observability**: Centralize logs and establish CloudWatch metrics, dashboards and alarms
+5. **Cutover**: Migrate production traffic incrementally with health validation and rollback capability
 
-See main README.md for detailed migration requirements.
+Detailed implementation, cutover and rollback decisions are maintained in the main project documentation.
