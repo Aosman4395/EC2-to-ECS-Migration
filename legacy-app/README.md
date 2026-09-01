@@ -1,6 +1,6 @@
 # EC2 Legacy Application
 
-This is a **legacy Flask application** running on a single EC2 instance behind Nginx. It represents a typical "before" state of an application that needs to be migrated to a modern containerized platform.
+This is a **legacy Flask application** running on a single EC2 instance behind Nginx. It represents the current state of an application scheduled for migration to a modern containerized platform.
 
 ## Architecture
 
@@ -197,9 +197,9 @@ sudo chown -R ubuntu:ubuntu /opt/flask-app
 sudo chown -R ubuntu:ubuntu /var/log/flask-app
 ```
 
-## Current Limitations (What Students Will Migrate)
+## Current Limitations
 
-This legacy setup has several limitations that make it unsuitable for production:
+This legacy setup has several limitations that make it unsuitable for production at scale:
 
 - ❌ **No autoscaling**: Single instance, no horizontal scaling
 - ❌ **No high availability**: Single point of failure
@@ -212,9 +212,9 @@ This legacy setup has several limitations that make it unsuitable for production
 - ❌ **No blue/green deployments**: Downtime during updates
 - ❌ **Security**: App runs in public subnet with public IP
 
-## Migration Goal
+## Migration Target
 
-Students will migrate this application to:
+The target platform will move this workload to:
 
 - ✅ **Amazon ECS (Fargate)**: Containerized, managed service
 - ✅ **Application Load Balancer**: High availability, health checks
@@ -236,17 +236,13 @@ terraform destroy
 
 ⚠️ **Warning**: This will delete all resources including the EC2 instance and data.
 
-## Notes for Migration
+## Migration Considerations
 
-When migrating to ECS, students should consider:
+The migration plan should address:
 
 1. **DNS Cutover Strategy**: Use Route53 weighted routing or ALIAS record swap
 2. **Health Checks**: Ensure ECS health checks pass before routing traffic
-3. **Data Migration**: Consider stateful data (currently in-memory, will be lost)
-4. **Monitoring**: Set up CloudWatch alarms before cutover
-5. **Rollback Plan**: Keep EC2 instance running during initial cutover
-6. **Testing**: Validate all endpoints on ECS before full cutover
-
-## License
-
-This is a learning project for CoderCo Community.
+3. **Data Migration**: Account for stateful data currently held in memory
+4. **Monitoring**: Establish CloudWatch alarms before cutover
+5. **Rollback Plan**: Keep the EC2 instance available during the initial cutover window
+6. **Testing**: Validate all endpoints on ECS before full traffic migration
