@@ -2,15 +2,30 @@
 
 ## Overview
 
-This project demonstrates the migration of a legacy application running on a single Amazon EC2 instance to a modern, containerised architecture using Amazon ECS with AWS Fargate.
+This project documents the migration of a legacy Python/Flask ordering API running on a single Amazon EC2 instance to a production-style, containerised platform using Amazon ECS with AWS Fargate.
 
-The existing application is a Python Flask API deployed to EC2 and served through Nginx. The legacy deployment represents a traditional workload with several limitations, including manual deployment processes, no application-level autoscaling, a single compute instance, and limited observability.
+The migration is being approached as an infrastructure modernisation rather than simply redeploying the application. The existing environment is first deployed, tested and assessed so that its behaviour and limitations are understood before changes are introduced.
 
-Rather than simply rebuilding the application on ECS, this project focuses on the full migration lifecycle:
+**Understand the existing environment → establish a working baseline → containerise the application → externalise application state → build the ECS platform → introduce CI/CD and observability → validate the new environment → safely cut traffic from EC2 to ECS.**
 
-**Understand the existing environment → establish a working baseline → containerise the application → build the ECS platform → introduce CI/CD and observability → validate the new environment → safely cut traffic from EC2 to ECS.**
+The target is to improve availability, scalability, security, deployment safety, observability and operational consistency while preserving the application's expected behaviour.
 
-The aim is to approach the migration as a real production workload where availability, security, rollback capability, observability and controlled cutover are important considerations.
+## What the Legacy API Does
+
+The legacy workload is a small product and ordering API written in Python using Flask and served by Gunicorn behind Nginx.
+
+It exposes endpoints that allow clients to:
+
+- Check application health with `GET /health`
+- List available products with `GET /api/v1/products`
+- Retrieve an individual product with `GET /api/v1/products/{id}`
+- Create an order with `POST /api/v1/orders`
+- Retrieve existing orders with `GET /api/v1/orders`
+- View basic application statistics with `GET /api/v1/stats`
+
+The application begins with three products held in memory. Creating an order records the order, calculates its total price and reduces the available stock for the selected product.
+
+This deliberately simple application allows the project to focus on the infrastructure and migration concerns around running a stateful legacy workload reliably in a modern container platform.
 
 ## Project Goals
 
@@ -18,7 +33,7 @@ The final platform will migrate the Flask application from EC2 to **Amazon ECS u
 
 The project aims to implement:
 
-- Docker containerisation of the legacy Flask application
+- Docker containerisation of the Flask application
 - Amazon ECR for container image storage
 - Amazon ECS using the Fargate launch type
 - Application Load Balancer for application traffic
@@ -27,7 +42,9 @@ The project aims to implement:
 - Public and private subnet separation
 - Security groups following least-privilege principles
 - Infrastructure as Code using Terraform
-- Automated CI/CD using GitHub Actions
+- Amazon RDS PostgreSQL for shared persistent application state
+- AWS Secrets Manager for secure database credentials
+- Automated CI/CD using GitHub Actions and AWS OIDC
 - Centralised application logging using Amazon CloudWatch
 - ECS service health checks
 - Horizontal application scaling
@@ -38,107 +55,207 @@ The project aims to implement:
 
 The starting environment consists of a Python Flask API running on a single EC2 instance.
 
-The existing deployment process uses Terraform to provision the AWS infrastructure.
-
-During EC2 startup, a user data script retrieves the application package from Amazon S3 and configures the instance so that the Flask application can be accessed through the EC2-hosted environment.
-
-The legacy architecture can broadly be represented as:
+Terraform provisions the AWS infrastructure. During EC2 startup, user data retrieves the application package from Amazon S3 and configures the host. Nginx accepts incoming HTTP traffic and proxies requests to Gunicorn, which runs the Flask application.
 
 ```text
 Client
   |
   v
-EC2
+EC2 Public Endpoint
   |
-Nginx
+  v
+Nginx :80
   |
+  v
+Gunicorn :5000
+  |
+  v
 Flask API
 ```
 
-This architecture provides a useful migration baseline but introduces several production concerns.
-
-### Legacy Limitations
-
-The current platform has:
-
-- A single EC2 application host
-- No application-level autoscaling
-- Manual/server-based application deployment
-- Tight coupling between infrastructure and application deployment
-- Limited deployment rollback capabilities
-- Inconsistent application logging
-- Server management overhead
-- A potential single point of failure
-
-These limitations provide the main drivers for the migration.
-
-## Target Architecture
-
-The target platform will replace the EC2-hosted workload with containerised ECS tasks running on AWS Fargate.
-
-```text
-                        Internet
-                            |
-                            v
-                 Application Load Balancer
-                            |
-                            v
-                     ECS Service
-                       /       \
-                      v         v
-                Fargate Task  Fargate Task
-                      |
-                      v
-                 Flask Container
-```
-
-Container images will be stored within Amazon ECR and deployments will eventually be automated through GitHub Actions.
-
-Terraform will continue to manage the AWS infrastructure.
-
-The target environment will also introduce CloudWatch logging, health checks, autoscaling and safer deployment mechanisms.
+The application currently stores products, stock levels and orders directly in Python process memory.
 
 ## Current Progress
 
 ### Phase 1 — Repository Setup
 
-The migration repository has been created and prepared for development.
-
-Completed work:
+Completed:
 
 - Created the migration repository
-- Added the legacy application under `legacy-app/`
+- Added the inherited application under `legacy-app/`
 - Verified that the legacy application files are correctly tracked by Git
 - Removed unnecessary training and assignment references
 - Established the repository as the working location for the migration
 - Pushed the repository to GitHub
 
-This gives the project a clean starting point while preserving the original application that will be migrated.
+### Phase 2 — Legacy EC2 Deployment
 
-### Phase 2 — Establish the Legacy Baseline
+The inherited Terraform configuration was reviewed and used to reproduce the existing EC2 environment.
 
-Before changing the architecture, the existing EC2 deployment is being reproduced and validated.
+The deployment flow is:
 
-This is an important part of the migration because the current application behaviour needs to be understood before introducing containers or ECS.
+```text
+Terraform Apply
+      |
+      v
+AWS infrastructure provisioned
+      |
+      v
+EC2 instance launched
+      |
+      v
+User data executed
+      |
+      v
+Application retrieved from S3
+      |
+      v
+Python/Gunicorn + Nginx configured
+      |
+      v
+Legacy API available
+```
 
-The existing Terraform configuration has been reviewed to understand how the legacy environment works.
+The Terraform deployment completed successfully and the API became accessible through the EC2 public endpoint.
 
-At a high level:
+## Legacy Application Baseline Validation
 
-1. Terraform provisions the required AWS infrastructure.
-2. An EC2 instance is created.
-3. EC2 user data runs during instance startup.
-4. The application is retrieved from Amazon S3.
-5. The application is configured on the instance.
-6. Nginx exposes the application.
-7. The application becomes accessible through the EC2 environment.
+Before making any migration changes, the existing application was tested to establish a known-good functional baseline.
 
-Understanding this deployment flow provides the baseline against which the ECS environment can later be tested.
+The following functionality was successfully validated:
 
-### Baseline Validation
+| Test | Result |
+| --- | --- |
+| `GET /health` | Healthy response returned |
+| `GET /api/v1/products` | Three products returned |
+| `GET /api/v1/products/1` | Individual product returned |
+| `POST /api/v1/orders` | Order successfully created |
+| `GET /api/v1/orders` | Created order returned |
+| `GET /api/v1/stats` | Order count and revenue calculated |
 
-Once the EC2 environment is deployed, the application endpoints will be tested to confirm that the legacy application behaves correctly.
+During testing, an order for two units of **Widget A** was successfully created. The API returned order ID `1`, quantity `2`, and a calculated total price of `59.98`. The orders endpoint subsequently returned the created order and the statistics endpoint reported one order and total revenue of `59.98`.
 
-The results will provide a known-good baseline before the migration begins.
+### Successful API Validation
 
-This prevents application problems from being incorrectly attributed to ECS later in the project.
+The following terminal output captures the baseline API tests against the running EC2 deployment:
+
+![Legacy API validation](screenshots/legacy-api-validation.png.png)
+
+This confirms that the existing request path is operational before migration work begins:
+
+```text
+Client → EC2 → Nginx → Gunicorn → Flask
+```
+
+## Baseline Finding — Inconsistent In-Memory State
+
+Baseline testing exposed an important reliability issue in the legacy application.
+
+After creating an order for two units of Widget A, the product stock should have changed from `100` to `98`. A subsequent request, however, returned a stock value of `100`.
+
+Repeated requests to the same endpoint confirmed that responses alternated between `100` and `98`:
+
+![Legacy state inconsistency](screenshots/legacy-state-inconsistency.png.png)
+
+### Root Cause
+
+The application stores its product and order data in Python variables inside the application process. Gunicorn runs multiple worker processes, and those workers do not share Python process memory.
+
+As a result, each worker can maintain a different copy of the application's state:
+
+```text
+                     Nginx
+                       |
+                       v
+                    Gunicorn
+                /       |       \
+               v        v        v
+           Worker 1  Worker 2  Worker 3
+           stock=98  stock=100 stock=100
+```
+
+An order handled by one worker modifies only that worker's copy of the data. A later request handled by another worker can therefore return a different stock level or order state.
+
+This means the legacy application has a data consistency problem **even while running on a single EC2 instance**. Restarting a worker or the instance would also remove the in-memory order data entirely.
+
+## Migration Decision — Externalise Application State
+
+This baseline finding changes an important part of the target architecture.
+
+Simply placing the existing application into multiple ECS tasks would make the problem worse because every task would maintain its own independent state.
+
+The migration will therefore externalise application data to **Amazon RDS for PostgreSQL**. Database credentials will be stored in **AWS Secrets Manager** rather than embedded in application configuration.
+
+```text
+Legacy
+
+Gunicorn Worker 1 ──→ Local process memory
+Gunicorn Worker 2 ──→ Different process memory
+Gunicorn Worker 3 ──→ Different process memory
+
+                    ❌ inconsistent and non-persistent
+
+Target
+
+ECS Task 1 ─┐
+ECS Task 2 ─┼──→ Amazon RDS PostgreSQL
+ECS Task 3 ─┘             |
+                           v
+                   Shared persistent state
+
+                            ✅
+```
+
+This gives all running ECS tasks a single durable source of truth for products, stock and orders and allows tasks to be replaced or horizontally scaled without losing application data.
+
+## Legacy Limitations Identified
+
+The baseline assessment has now identified the following production concerns:
+
+- Single EC2 application host and single point of failure
+- No application-level autoscaling
+- Application hosted directly on a publicly reachable server
+- Server-based deployment and configuration
+- No automated CI/CD pipeline
+- Limited deployment rollback capability
+- Logs distributed across the EC2 host
+- Limited application-level monitoring and alerting
+- Product and order state stored in process memory
+- State is inconsistent between Gunicorn workers
+- Application state is lost when processes restart
+- Current state model cannot safely support horizontal scaling
+
+These findings form the engineering justification for the ECS migration rather than introducing services purely for architectural complexity.
+
+## Target Architecture
+
+The target platform will replace the EC2-hosted workload with containerised ECS tasks running on AWS Fargate and shared persistent storage in RDS.
+
+```text
+                         Internet
+                            |
+                            v
+                       Route 53
+                            |
+                            v
+                 Application Load Balancer
+                            |
+                            v
+                       ECS Service
+                       /         \
+                      v           v
+                Fargate Task   Fargate Task
+                      \           /
+                       \         /
+                        v       v
+                    RDS PostgreSQL
+                         ^
+                         |
+                  Secrets Manager
+```
+
+Container images will be stored in Amazon ECR and deployments will be automated through GitHub Actions using AWS OIDC rather than long-lived AWS credentials.
+
+Terraform will manage the AWS infrastructure, while CloudWatch will provide centralised logs, metrics, dashboards and alarms.
+
+The EC2 environment will remain available during migration validation so that the ECS environment can be tested in parallel and traffic can later be moved using a controlled cutover and rollback strategy.
