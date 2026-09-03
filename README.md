@@ -208,6 +208,160 @@ ECS Task 3 ─┘             |
 
 This gives all running ECS tasks a single durable source of truth for products, stock and orders and allows tasks to be replaced or horizontally scaled without losing application data.
 
+## Phase 3 — Docker Containerisation
+
+The legacy Flask application has now been containerised and validated locally before any ECS resources are introduced. This keeps the migration incremental: first prove that the application behaves correctly inside a container, then move that known-good image into ECR and ECS.
+
+The container image uses `python:3.9-slim` as its base image. The slim variant provides the required Python runtime while avoiding the additional packages included in larger general-purpose images. This keeps the image smaller, reduces unnecessary dependencies and lowers the overall attack surface.
+
+The application is copied into `/legacy-app`, which is set as the container working directory. Python dependencies are installed from `requirements.txt`, port `5000` is documented as the application port, and Gunicorn is used as the production WSGI server.
+
+```text
+Docker Container
+      |
+      v
+Gunicorn :5000
+      |
+      v
+wsgi.py
+      |
+      v
+Flask Application
+```
+
+### Why a Single-Stage Build Was Used
+
+A multi-stage Docker build was considered but was not required for this workload.
+
+The application is a small Python/Flask service with no separate compilation step, frontend asset build, or build-time toolchain that needs to be excluded from the final image. Its containerisation process is simply:
+
+```text
+Python slim base image
+        |
+        v
+Copy application source
+        |
+        v
+Install Python dependencies
+        |
+        v
+Run Gunicorn
+```
+
+Introducing an additional build stage would therefore add complexity without providing a meaningful reduction in the runtime image. Using the official `python:3.9-slim` base image already provides a lightweight foundation for the service.
+
+If future dependencies require compilers, development headers or other temporary build tooling, a multi-stage build can be introduced so those tools remain outside the final runtime image.
+
+### Production Application Server
+
+The application includes both Flask's built-in development server and a WSGI entry point for Gunicorn.
+
+The container does not start the application using `python app.py`, because that would run Flask's development server. Instead, Gunicorn loads the Flask application through `wsgi.py` and listens on all container network interfaces on port `5000`.
+
+```text
+Gunicorn
+   |
+   v
+wsgi:app
+   |
+   v
+Flask API
+```
+
+This preserves the production serving model used by the legacy application while removing the dependency on the EC2 host.
+
+### Container Security
+
+The runtime container follows the principle of least privilege.
+
+A dedicated non-root user named `legacyuser` is created during the image build. Image setup and Python dependency installation are completed first, after which the container switches to `legacyuser` before Gunicorn is started.
+
+This means the application process does not run as root inside the container.
+
+```text
+Image build/setup
+      |
+      v
+root
+      |
+      v
+Dependencies installed
+      |
+      v
+USER legacyuser
+      |
+      v
+Gunicorn / Flask runtime
+```
+
+The application source remains readable by the runtime user without granting unnecessary write privileges to the application files.
+
+The runtime identity was explicitly verified after starting the container:
+
+```text
+docker exec legacy whoami
+legacyuser
+```
+
+This confirms that the non-root security configuration is effective rather than only being declared in the Dockerfile.
+
+### Docker Build Context Security
+
+A `.dockerignore` file was added to prevent files that are not required for the application image from being included in the Docker build context.
+
+Excluded content includes:
+
+- Git metadata
+- Documentation and screenshots
+- Legacy Nginx and systemd configuration
+- Legacy Terraform infrastructure files
+- Terraform state and backup state files
+- Python cache files
+- Local environment files and private key formats
+- IDE and operating-system metadata
+
+This is particularly important because Terraform state and local environment files can contain sensitive infrastructure or configuration data.
+
+The build therefore uses two controls:
+
+```text
+.dockerignore
+      |
+      v
+Restrict build context
+      |
+      v
+COPY legacy-app/app /legacy-app
+      |
+      v
+Only application files enter the image
+```
+
+### Local Container Validation
+
+The image was successfully built and started locally with host port `5000` mapped to container port `5000`.
+
+The running container showed the expected mapping:
+
+```text
+0.0.0.0:5000 -> 5000/tcp
+```
+
+The following API checks were then successfully completed against the containerised application:
+
+| Test | Result |
+| --- | --- |
+| `GET /health` | Healthy production response returned |
+| `GET /api/v1/orders` | Orders endpoint responded successfully |
+| `GET /api/v1/stats` | Application statistics returned successfully |
+| Runtime user check | Container confirmed to run as `legacyuser` |
+
+The health endpoint returned the service as healthy with the environment reported as `production`, confirming that Gunicorn successfully loaded and served the Flask application inside the container.
+
+At this point the workload has been successfully moved from a host-dependent application deployment into a repeatable Docker image while preserving its API behaviour.
+
+The next container platform milestone is to store the validated image in **Amazon ECR** before introducing the ECS Fargate service.
+
 ## Legacy Limitations Identified
 
 The baseline assessment has now identified the following production concerns:
