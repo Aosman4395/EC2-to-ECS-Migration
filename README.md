@@ -10,6 +10,28 @@ The migration is being approached as an infrastructure modernisation rather than
 
 The target is to improve availability, scalability, security, deployment safety, observability and operational consistency while preserving the application's expected behaviour.
 
+## Contents
+
+- [What the Legacy API Does](#what-the-legacy-api-does)
+- [Legacy Architecture](#legacy-architecture)
+- [Legacy Limitations Identified](#legacy-limitations-identified)
+- [Target Architecture](#target-architecture)
+- [Project Goals](#project-goals)
+- [Current Progress](#current-progress)
+  - [Phase 1 — Repository Setup](#phase-1--repository-setup)
+  - [Phase 2 — Legacy EC2 Deployment](#phase-2--legacy-ec2-deployment)
+- [Legacy Application Baseline Validation](#legacy-application-baseline-validation)
+  - [Successful API Validation](#successful-api-validation)
+- [Baseline Finding — Inconsistent In-Memory State](#baseline-finding--inconsistent-in-memory-state)
+  - [Root Cause](#root-cause)
+- [Migration Decision — Externalise Application State](#migration-decision--externalise-application-state)
+- [Phase 3 — Docker Containerisation](#phase-3--docker-containerisation)
+  - [Why a Single-Stage Build Was Used](#why-a-single-stage-build-was-used)
+  - [Production Application Server](#production-application-server)
+  - [Container Security](#container-security)
+  - [Docker Build Context Security](#docker-build-context-security)
+  - [Local Container Validation](#local-container-validation)
+
 ## What the Legacy API Does
 
 The legacy workload is a small product and ordering API written in Python using Flask and served by Gunicorn behind Nginx.
@@ -26,30 +48,6 @@ It exposes endpoints that allow clients to:
 The application begins with three products held in memory. Creating an order records the order, calculates its total price and reduces the available stock for the selected product.
 
 This deliberately simple application allows the project to focus on the infrastructure and migration concerns around running a stateful legacy workload reliably in a modern container platform.
-
-## Project Goals
-
-The final platform will migrate the Flask application from EC2 to **Amazon ECS using AWS Fargate**, removing the need to directly manage application servers.
-
-The project aims to implement:
-
-- Docker containerisation of the Flask application
-- Amazon ECR for container image storage
-- Amazon ECS using the Fargate launch type
-- Application Load Balancer for application traffic
-- ECS services and task definitions
-- Multi-AZ networking
-- Public and private subnet separation
-- Security groups following least-privilege principles
-- Infrastructure as Code using Terraform
-- Amazon RDS PostgreSQL for shared persistent application state
-- AWS Secrets Manager for secure database credentials
-- Automated CI/CD using GitHub Actions and AWS OIDC
-- Centralised application logging using Amazon CloudWatch
-- ECS service health checks
-- Horizontal application scaling
-- Deployment rollback capability
-- A controlled EC2 → ECS production cutover strategy
 
 ## Legacy Architecture
 
@@ -74,6 +72,82 @@ Flask API
 ```
 
 The application currently stores products, stock levels and orders directly in Python process memory.
+
+## Legacy Limitations Identified
+
+The baseline assessment identified the following production concerns:
+
+- Single EC2 application host and single point of failure
+- No application-level autoscaling
+- Application hosted directly on a publicly reachable server
+- Server-based deployment and configuration
+- No automated CI/CD pipeline
+- Limited deployment rollback capability
+- Logs distributed across the EC2 host
+- Limited application-level monitoring and alerting
+- Product and order state stored in process memory
+- State is inconsistent between Gunicorn workers
+- Application state is lost when processes restart
+- Current state model cannot safely support horizontal scaling
+
+These findings form the engineering justification for the ECS migration rather than introducing services purely for architectural complexity.
+
+## Target Architecture
+
+The target platform will replace the EC2-hosted workload with containerised ECS tasks running on AWS Fargate and shared persistent storage in RDS.
+
+```text
+                         Internet
+                            |
+                            v
+                       Route 53
+                            |
+                            v
+                 Application Load Balancer
+                            |
+                            v
+                       ECS Service
+                       /         \
+                      v           v
+                Fargate Task   Fargate Task
+                      \           /
+                       \         /
+                        v       v
+                    RDS PostgreSQL
+                         ^
+                         |
+                  Secrets Manager
+```
+
+Container images will be stored in Amazon ECR and deployments will be automated through GitHub Actions using AWS OIDC rather than long-lived AWS credentials.
+
+Terraform will manage the AWS infrastructure, while CloudWatch will provide centralised logs, metrics, dashboards and alarms.
+
+The EC2 environment will remain available during migration validation so that the ECS environment can be tested in parallel and traffic can later be moved using a controlled cutover and rollback strategy.
+
+## Project Goals
+
+The final platform will migrate the Flask application from EC2 to **Amazon ECS using AWS Fargate**, removing the need to directly manage application servers.
+
+The project aims to implement:
+
+- Docker containerisation of the Flask application
+- Amazon ECR for container image storage
+- Amazon ECS using the Fargate launch type
+- Application Load Balancer for application traffic
+- ECS services and task definitions
+- Multi-AZ networking
+- Public and private subnet separation
+- Security groups following least-privilege principles
+- Infrastructure as Code using Terraform
+- Amazon RDS PostgreSQL for shared persistent application state
+- AWS Secrets Manager for secure database credentials
+- Automated CI/CD using GitHub Actions and AWS OIDC
+- Centralised application logging using Amazon CloudWatch
+- ECS service health checks
+- Horizontal application scaling
+- Deployment rollback capability
+- A controlled EC2 → ECS production cutover strategy
 
 ## Current Progress
 
@@ -361,55 +435,3 @@ The health endpoint returned the service as healthy with the environment reporte
 At this point the workload has been successfully moved from a host-dependent application deployment into a repeatable Docker image while preserving its API behaviour.
 
 The next container platform milestone is to store the validated image in **Amazon ECR** before introducing the ECS Fargate service.
-
-## Legacy Limitations Identified
-
-The baseline assessment has now identified the following production concerns:
-
-- Single EC2 application host and single point of failure
-- No application-level autoscaling
-- Application hosted directly on a publicly reachable server
-- Server-based deployment and configuration
-- No automated CI/CD pipeline
-- Limited deployment rollback capability
-- Logs distributed across the EC2 host
-- Limited application-level monitoring and alerting
-- Product and order state stored in process memory
-- State is inconsistent between Gunicorn workers
-- Application state is lost when processes restart
-- Current state model cannot safely support horizontal scaling
-
-These findings form the engineering justification for the ECS migration rather than introducing services purely for architectural complexity.
-
-## Target Architecture
-
-The target platform will replace the EC2-hosted workload with containerised ECS tasks running on AWS Fargate and shared persistent storage in RDS.
-
-```text
-                         Internet
-                            |
-                            v
-                       Route 53
-                            |
-                            v
-                 Application Load Balancer
-                            |
-                            v
-                       ECS Service
-                       /         \
-                      v           v
-                Fargate Task   Fargate Task
-                      \           /
-                       \         /
-                        v       v
-                    RDS PostgreSQL
-                         ^
-                         |
-                  Secrets Manager
-```
-
-Container images will be stored in Amazon ECR and deployments will be automated through GitHub Actions using AWS OIDC rather than long-lived AWS credentials.
-
-Terraform will manage the AWS infrastructure, while CloudWatch will provide centralised logs, metrics, dashboards and alarms.
-
-The EC2 environment will remain available during migration validation so that the ECS environment can be tested in parallel and traffic can later be moved using a controlled cutover and rollback strategy.
