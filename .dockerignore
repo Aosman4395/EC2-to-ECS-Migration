@@ -1,0 +1,39 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+legacy-app/*.md
+
+# Screenshots
+screenshots/
+
+# Legacy EC2 infrastructure
+legacy-app/terraform/
+legacy-app/nginx/
+legacy-app/systemd/
+legacy-app/scripts/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Local environment / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+
+# IDE / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
