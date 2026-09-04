@@ -13,6 +13,7 @@ The migration is being completed incrementally: first understanding and testing 
 - [Target Architecture](#target-architecture)
 - [Legacy Application](#legacy-application)
 - [Legacy Architecture](#legacy-architecture)
+- [Key Legacy Limitations](#key-legacy-limitations)
 - [Baseline Testing](#baseline-testing)
 - [Key Finding — In-Memory State](#key-finding--in-memory-state)
 - [Docker Containerisation](#docker-containerisation)
@@ -83,7 +84,14 @@ Gunicorn :5000
 Flask API
 ```
 
-The legacy environment had several limitations: a single point of failure, no autoscaling, manual/server-based deployments, limited monitoring and rollback capability, and non-persistent application state.
+## Key Legacy Limitations
+
+- **Single point of failure** — the entire application depended on one EC2 instance.
+- **No autoscaling** — the workload could not automatically scale with demand.
+- **Manual deployments** — application releases required server-level deployment steps.
+- **Limited observability** — logs and monitoring were tied to the EC2 host.
+- **No shared persistent state** — products and orders were stored in application memory.
+- **Limited deployment safety** — there was no automated rollback or controlled traffic cutover strategy.
 
 ## Baseline Testing
 
