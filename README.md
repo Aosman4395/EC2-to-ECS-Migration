@@ -10,14 +10,47 @@ The migration is being completed incrementally: first understanding and testing 
 
 ## Contents
 
+- [Target Architecture](#target-architecture)
 - [Legacy Application](#legacy-application)
 - [Legacy Architecture](#legacy-architecture)
 - [Baseline Testing](#baseline-testing)
 - [Key Finding — In-Memory State](#key-finding--in-memory-state)
 - [Docker Containerisation](#docker-containerisation)
 - [Application Changes for Data Persistence](#application-changes-for-data-persistence)
-- [Target Architecture](#target-architecture)
-- [Current Progress](#current-progress)
+
+## Target Architecture
+
+```text
+                     Internet
+                        |
+                        v
+             Application Load Balancer
+                        |
+                        v
+                  ECS Fargate Service
+                   /             \
+                  v               v
+              ECS Task         ECS Task
+                   \             /
+                    v           v
+                 RDS PostgreSQL
+                        |
+                 Secrets Manager
+```
+
+The target platform will use:
+
+- Amazon ECR for container images
+- Amazon ECS Fargate for application compute
+- Application Load Balancer for traffic distribution
+- Private ECS subnets across multiple Availability Zones
+- Amazon RDS PostgreSQL for persistent shared state
+- AWS Secrets Manager for database credentials
+- Terraform for infrastructure provisioning
+- GitHub Actions with AWS OIDC for CI/CD
+- Amazon CloudWatch for logs, metrics and alarms
+- ECS Service Auto Scaling
+- A controlled EC2 → ECS cutover and rollback strategy
 
 ## Legacy Application
 
@@ -111,57 +144,3 @@ Before building the new Terraform infrastructure, the application was reviewed a
 - Add the PostgreSQL dependency to `requirements.txt`
 
 The updated Docker image was rebuilt successfully and `/health` returned HTTP `200`. Database-backed endpoints will be fully tested once Amazon RDS PostgreSQL is provisioned and connected.
-
-## Target Architecture
-
-```text
-                     Internet
-                        |
-                        v
-             Application Load Balancer
-                        |
-                        v
-                  ECS Fargate Service
-                   /             \
-                  v               v
-              ECS Task         ECS Task
-                   \             /
-                    v           v
-                 RDS PostgreSQL
-                        |
-                 Secrets Manager
-```
-
-The target platform will use:
-
-- Amazon ECR for container images
-- Amazon ECS Fargate for application compute
-- Application Load Balancer for traffic distribution
-- Private ECS subnets across multiple Availability Zones
-- Amazon RDS PostgreSQL for persistent shared state
-- AWS Secrets Manager for database credentials
-- Terraform for infrastructure provisioning
-- GitHub Actions with AWS OIDC for CI/CD
-- Amazon CloudWatch for logs, metrics and alarms
-- ECS Service Auto Scaling
-- A controlled EC2 → ECS cutover and rollback strategy
-
-## Current Progress
-
-- [x] Repository and legacy application setup
-- [x] Legacy EC2 environment deployed with Terraform
-- [x] Legacy API baseline tested
-- [x] In-memory state issue identified
-- [x] Application containerised with Docker
-- [x] Non-root container runtime implemented
-- [x] Local container health validation completed
-- [x] Application updated for PostgreSQL persistence
-- [x] PostgreSQL dependency added and image rebuilt successfully
-- [ ] Build target Terraform infrastructure
-- [ ] Provision RDS PostgreSQL and database security
-- [ ] Push container image to ECR
-- [ ] Deploy ECS Fargate service and ALB
-- [ ] Validate database persistence through ECS
-- [ ] Implement GitHub Actions CI/CD
-- [ ] Add CloudWatch monitoring and ECS autoscaling
-- [ ] Plan and validate EC2 → ECS cutover and rollback
