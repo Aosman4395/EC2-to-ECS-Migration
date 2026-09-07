@@ -5,8 +5,8 @@ on:
     branches:
       - main
     paths:
-      - "terraform/bootstrap/**"
-      - ".github/workflows/terraform-bootstrap.yml"
+      - "ECS-migration/terraform/bootstrap/**"
+      - ".github/workflows/bootstrap.yaml"
 
   workflow_dispatch:
 
