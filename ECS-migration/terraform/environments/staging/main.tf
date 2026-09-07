@@ -1,9 +1,3 @@
-# Staging migration environment
-#
-# The legacy EC2 environment remains running in dev and is read here through
-# remote state for side-by-side validation. This state owns only the new ECS
-# staging infrastructure.
-
 # Reference the existing legacy EC2 environment without recreating it.
 data "terraform_remote_state" "legacy_dev" {
   backend = "s3"
@@ -15,19 +9,17 @@ data "terraform_remote_state" "legacy_dev" {
   }
 }
 
-# New target network for the ECS staging platform.
+#New ECS staging environment
 module "vpc" {
   source = "../../infrastructure/modules/vpc"
 
   vpc_name = "ecs-migration-staging-vpc"
 }
 
-# IAM roles used by the ECS task definition.
 module "iam" {
   source = "../../infrastructure/modules/iam"
 }
 
-# Internet-facing ALB in the public subnets.
 module "alb" {
   source = "../../infrastructure/modules/alb"
 
@@ -38,7 +30,6 @@ module "alb" {
   certificate_arn   = var.certificate_arn
 }
 
-# New ECS Fargate application service in private subnets.
 module "ecs" {
   source = "../../infrastructure/modules/ecs"
 
@@ -57,5 +48,49 @@ module "ecs" {
   aws_region      = var.aws_region
 }
 
-# RDS, Secrets Manager integration, service autoscaling, CloudWatch dashboards,
+# RDS Community Module
+
+resource "aws_security_group" "rds" {
+  name        = "migration-staging-rds-sg"
+  description = "Security group for RDS instance"
+  vpc_id      = module.vpc.vpc_id
+
+  ingress {
+  from_port       = 5432
+  to_port         = 5432
+  protocol        = "tcp"
+  security_groups = [module.ecs.ecs_security_group_id]
+}
+  }
+
+module "rds"  {
+  source = "terraform-aws-modules/rds/aws"
+  version = "7.2.1"
+
+  identifier = "migration-staging-db"
+  engine = "postgres"
+  engine_version = "17.0"
+  instance_class = "db.t3.micro"
+  allocated_storage = 20
+  storage_type = "gp2"
+
+  db_name = "migrationdb"
+  username = "admin"
+
+  manage_master_user_password = true
+
+  manage_master_user_password_rotation = true
+  master_user_password_rotation_automatically_after_days	 = 15
+
+
+  subnet_ids = module.vpc.rds_private_subnet_ids
+  vpc_security_group_ids = [aws_security_group.rds.id]
+
+  skip_final_snapshot = true
+  publicly_accessible = false
+  deletion_protection = false
+  backup_retention_period = 1
+}
+
+
 # alarms and migration traffic shifting are intentionally added later.
