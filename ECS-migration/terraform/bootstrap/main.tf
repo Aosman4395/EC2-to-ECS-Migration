@@ -81,7 +81,7 @@ resource "aws_iam_role" "github_actions" {
           }
 
           StringLike = {
-            "token.actions.githubusercontent.com:sub" = "repo:Aosman4395/EC2-to-ECS-Migration:*"
+            "token.actions.githubusercontent.com:sub" = "repo:Aosman4395@235475597/EC2-to-ECS-Migration@1353647365:*"
           }
         }
       }
