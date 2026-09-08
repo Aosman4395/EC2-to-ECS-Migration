@@ -40,49 +40,36 @@ resource "aws_s3_bucket_public_access_block" "terraform_state_public_access_bloc
 #ECR repository
 
 module "ecr" {
-  source = "../modules/ecr"
-
+  source = "../infrastructure/modules/ecr"
   ecr_repository_name = var.ecr_repository_name
   ecr_repository_tags = var.ecr_repository_tags
 }
 
 #IAM role for GitHub Actions
 
-resource "aws_iam_openid_connect_provider" "github" {
-  url = "https://token.actions.githubusercontent.com"
-
-  client_id_list = [
-    "sts.amazonaws.com"
-  ]
-
-  thumbprint_list = [
-    "6938fd4d98bab03faadb97b34396831e3780aea1"
-  ]
-}
-
 resource "aws_iam_role" "github_actions" {
   name = "github-actions-terraform"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
+
     Statement = [
       {
         Effect = "Allow"
+
         Principal = {
-          Federated = aws_iam_openid_connect_provider.github.arn
+          Federated = "arn:aws:iam::673588459289:oidc-provider/token.actions.githubusercontent.com"
         }
+
         Action = "sts:AssumeRoleWithWebIdentity"
+
         Condition = {
           StringEquals = {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
 
           StringLike = {
-            "token.actions.githubusercontent.com:sub" = [
-              "repo:Aosman4395/EC2-to-ECS-Migration:ref:refs/heads/main",
-              "repo:Aosman4395/EC2-to-ECS-Migration:environment:bootstrap"
-            ]
-
+            "token.actions.githubusercontent.com:sub" = "repo:Aosman4395/EC2-to-ECS-Migration:*"
           }
         }
       }
