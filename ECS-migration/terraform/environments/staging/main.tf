@@ -93,4 +93,4 @@ module "rds"  {
 }
 
 
-# alarms and migration traffic shifting are intentionally added later.
+# Monitoring and alerting to be added in Production

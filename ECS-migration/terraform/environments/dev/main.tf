@@ -1,26 +1,38 @@
-# Development environment
-#
-# Reproduces the original legacy EC2 architecture so the application can be
-# baselined and validated before comparison with the ECS migration target.
-
-# Data source for latest Amazon Linux 2023 AMI
-data "aws_ami" "amazon_linux" {
-  most_recent = true
-  owners      = ["amazon"]
-
-  filter {
-    name   = "name"
-    values = ["al2023-ami-*-x86_64"]
+terraform {
+  backend "s3" {
+    bucket  = "aosman-ecs-bootstrap-bucket"
+    key     = "legacy/terraform.tfstate"
+    region  = "eu-west-2"
+    encrypt = true
   }
 
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.4"
+    }
   }
 }
 
-data "aws_availability_zones" "available" {
-  state = "available"
+provider "aws" {
+  region = var.aws_region
+
+  default_tags {
+    tags = merge(
+      {
+        Project     = var.project_name
+        Environment = var.environment
+        ManagedBy   = "Terraform"
+      },
+      var.tags
+    )
+  }
 }
 
 # VPC
@@ -34,6 +46,7 @@ resource "aws_vpc" "main" {
   }
 }
 
+# Internet Gateway
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
@@ -42,6 +55,25 @@ resource "aws_internet_gateway" "main" {
   }
 }
 
+# Public Subnet (for EC2 with public IP)
+resource "aws_subnet" "public" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = data.aws_availability_zones.available.names[0]
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "${var.project_name}-public-subnet"
+    Type = "Public"
+  }
+}
+
+
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+# Route Table for Public Subnet
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
 
@@ -55,12 +87,13 @@ resource "aws_route_table" "public" {
   }
 }
 
+# Route Table Association for Public Subnet
 resource "aws_route_table_association" "public" {
   subnet_id      = aws_subnet.public.id
   route_table_id = aws_route_table.public.id
 }
 
-# Security group for the legacy EC2 application
+# Security Group for EC2 Instance
 resource "aws_security_group" "ec2" {
   name_prefix = "${var.project_name}-ec2-"
   description = "Security group for EC2 instance running Flask app"
@@ -83,11 +116,12 @@ resource "aws_security_group" "ec2" {
   }
 
   ingress {
-    description = "SSH from allowed CIDR"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = var.allowed_cidr_blocks
+    description     = "SSH from allowed CIDR"
+    from_port       = 22
+    to_port         = 22
+    protocol        = "tcp"
+    cidr_blocks     = var.allowed_cidr_blocks
+    security_groups = []
   }
 
   egress {
@@ -107,7 +141,7 @@ resource "aws_security_group" "ec2" {
   }
 }
 
-# IAM role and instance profile for EC2
+# IAM Role for EC2 Instance
 resource "aws_iam_role" "ec2" {
   name_prefix = "${var.project_name}-ec2-"
 
@@ -129,19 +163,21 @@ resource "aws_iam_role" "ec2" {
   }
 }
 
+# IAM Instance Profile
 resource "aws_iam_instance_profile" "ec2" {
   name_prefix = "${var.project_name}-ec2-"
   role        = aws_iam_role.ec2.name
 }
 
-# Package the original legacy application from the repository.
+# Archive application files
 data "archive_file" "app" {
   type        = "zip"
   output_path = "${path.module}/app.zip"
-  source_dir  = "${path.module}/../../../../legacy-app"
+  source_dir  = "${path.module}/../"
   excludes    = ["terraform", ".git", ".terraform", "*.tfstate", "*.tfstate.backup"]
 }
 
+# Upload application to S3 bucket (for EC2 to download)
 resource "aws_s3_bucket" "app" {
   bucket_prefix = "${var.project_name}-app-"
 
@@ -152,7 +188,6 @@ resource "aws_s3_bucket" "app" {
 
 resource "aws_s3_bucket_versioning" "app" {
   bucket = aws_s3_bucket.app.id
-
   versioning_configuration {
     status = "Enabled"
   }
@@ -184,6 +219,7 @@ resource "aws_s3_object" "app" {
   etag   = filemd5(data.archive_file.app.output_path)
 }
 
+# S3 bucket policy for EC2 access
 resource "aws_iam_role_policy" "ec2_s3_access" {
   name_prefix = "${var.project_name}-ec2-s3-"
   role        = aws_iam_role.ec2.id
@@ -202,41 +238,49 @@ resource "aws_iam_role_policy" "ec2_s3_access" {
   })
 }
 
+# User data script for EC2 instance
 locals {
   user_data = <<-EOF
 #!/bin/bash
 set -euo pipefail
 
+# Variables
 APP_DIR="/opt/flask-app"
 S3_BUCKET="${aws_s3_bucket.app.id}"
 S3_KEY="app.zip"
 
+# Install dependencies
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get upgrade -y -qq
 apt-get install -y -qq awscli python3 python3-venv python3-pip nginx git curl wget unzip
 
+# Create application directory
 mkdir -p $APP_DIR
 mkdir -p /var/log/flask-app
 chown ubuntu:ubuntu $APP_DIR
 chown ubuntu:ubuntu /var/log/flask-app
 
+# Download application from S3
 aws s3 cp s3://$S3_BUCKET/$S3_KEY /tmp/app.zip
 cd /tmp
 unzip -q app.zip -d $APP_DIR/
 rm app.zip
 
+# Set ownership
 chown -R ubuntu:ubuntu $APP_DIR
 
+# Run setup script (as root, script handles permissions)
 cd $APP_DIR
 chmod +x scripts/setup.sh
 bash $APP_DIR/scripts/setup.sh
 
+# Signal completion
 echo "Application setup completed at $(date)" >> /var/log/user-data.log
   EOF
 }
 
-# Legacy EC2 instance
+# EC2 Instance
 resource "aws_instance" "app" {
   ami                    = "ami-0224ce6f9504665ee"
   instance_type          = var.instance_type
@@ -246,6 +290,7 @@ resource "aws_instance" "app" {
   key_name               = var.key_pair_name != "" ? var.key_pair_name : null
   user_data              = base64encode(local.user_data)
 
+  # Ensure S3 object exists before instance starts
   depends_on = [aws_s3_object.app]
 
   root_block_device {
@@ -264,6 +309,7 @@ resource "aws_instance" "app" {
   }
 }
 
+# Elastic IP for EC2 
 resource "aws_eip" "app" {
   domain   = "vpc"
   instance = aws_instance.app.id
@@ -273,11 +319,13 @@ resource "aws_eip" "app" {
   }
 }
 
+# Route53 Record 
 resource "aws_route53_record" "app" {
   count   = var.domain_name != "" && var.route53_zone_id != "" ? 1 : 0
   zone_id = var.route53_zone_id
   name    = var.domain_name
   type    = "A"
+
   records = [aws_eip.app.public_ip]
-  ttl     = 300
+  ttl     = 300 # 5 minutes TTL for easy cutover
 }

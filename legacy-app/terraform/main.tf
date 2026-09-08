@@ -1,4 +1,11 @@
 terraform {
+  backend "s3" {
+    bucket  = "aosman-legacy-terraform-state"
+    key     = "legacy/terraform.tfstate"
+    region  = "eu-west-2"
+    encrypt = true
+  }
+
   required_version = ">= 1.5.0"
 
   required_providers {
@@ -25,22 +32,6 @@ provider "aws" {
       },
       var.tags
     )
-  }
-}
-
-# Data source for latest Amazon Linux 2023 AMI
-data "aws_ami" "amazon_linux" {
-  most_recent = true
-  owners      = ["amazon"]
-
-  filter {
-    name   = "name"
-    values = ["al2023-ami-*-x86_64"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
   }
 }
 
@@ -77,17 +68,6 @@ resource "aws_subnet" "public" {
   }
 }
 
-# Private Subnet (for future ECS tasks)
-resource "aws_subnet" "private" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.2.0/24"
-  availability_zone = data.aws_availability_zones.available.names[0]
-
-  tags = {
-    Name = "${var.project_name}-private-subnet"
-    Type = "Private"
-  }
-}
 
 data "aws_availability_zones" "available" {
   state = "available"
