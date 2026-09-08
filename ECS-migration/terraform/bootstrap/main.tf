@@ -1,7 +1,7 @@
 #S3 bucket 
 
 resource "aws_s3_bucket" "bootstrap_bucket" {
-  bucket = "aosman-ecs-bootstrap-bucket"
+  bucket        = "aosman-ecs-bootstrap-bucket"
   force_destroy = false
 
   tags = {
@@ -11,22 +11,22 @@ resource "aws_s3_bucket" "bootstrap_bucket" {
 }
 
 resource "aws_s3_bucket_versioning" "tf_state_versioning" {
-    bucket = aws_s3_bucket.bootstrap_bucket.id
-    
-    versioning_configuration {
-        status = "Enabled"
-    }
-  
+  bucket = aws_s3_bucket.bootstrap_bucket.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "tf_state_encryption" {
-    bucket = aws_s3_bucket.bootstrap_bucket.id
+  bucket = aws_s3_bucket.bootstrap_bucket.id
 
-    rule {
-        apply_server_side_encryption_by_default {
-            sse_algorithm = "AES256"
-        }
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
     }
+  }
 }
 
 resource "aws_s3_bucket_public_access_block" "terraform_state_public_access_block" {
@@ -44,7 +44,7 @@ module "ecr" {
 
   ecr_repository_name = var.ecr_repository_name
   ecr_repository_tags = var.ecr_repository_tags
-  }
+}
 
 #IAM role for GitHub Actions
 
@@ -80,8 +80,9 @@ resource "aws_iam_role" "github_actions" {
           StringLike = {
             "token.actions.githubusercontent.com:sub" = [
               "repo:Aosman4395/EC2-to-ECS-Migration:ref:refs/heads/main",
-              "repo:Aosman4395/EC2-to-ECS-Migration:environment:production"
+              "repo:Aosman4395/EC2-to-ECS-Migration:environment:bootstrap"
             ]
+
           }
         }
       }
