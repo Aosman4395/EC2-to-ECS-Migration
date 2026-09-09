@@ -9,7 +9,7 @@ terraform {
   }
 
   backend "s3" {
-    bucket       = "aosman-ecs-migration-tf-state"
+    bucket       = "aosman-ecs-bootstrap-bucket"
     key          = "environments/staging/terraform.tfstate"
     region       = "eu-west-2"
     encrypt      = true
