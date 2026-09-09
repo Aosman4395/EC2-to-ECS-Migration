@@ -62,3 +62,29 @@ variable "subnet_ids" {
   type        = list(string)
 
 }
+
+variable "db_host" {
+  description = "RDS PostgreSQL endpoint"
+  type        = string
+}
+
+variable "db_name" {
+  description = "PostgreSQL database name"
+  type        = string
+}
+
+variable "db_port" {
+  description = "PostgreSQL database port"
+  type        = number
+  default     = 5432
+}
+
+variable "db_secret_arn" {
+  description = "Secrets Manager ARN containing the RDS username and password"
+  type        = string
+}
+
+variable "execution_role_name" {
+  description = "Name of the ECS execution role receiving database secret access"
+  type        = string
+}

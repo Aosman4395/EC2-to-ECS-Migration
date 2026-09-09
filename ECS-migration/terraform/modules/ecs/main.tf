@@ -5,6 +5,7 @@ resource "aws_security_group" "ecs_sg" {
 }
 
 resource "aws_security_group_rule" "ecs_from_alb" {
+  description              = "Allow application traffic from the ALB to ECS tasks"
   type                     = "ingress"
   from_port                = var.container_port
   to_port                  = var.container_port
@@ -14,6 +15,7 @@ resource "aws_security_group_rule" "ecs_from_alb" {
 }
 
 resource "aws_security_group_rule" "ecs_egress_all" {
+  description       = "Allow all outbound traffic from ECS tasks"
   type              = "egress"
   from_port         = 0
   to_port           = 0
@@ -29,7 +31,7 @@ resource "aws_cloudwatch_log_group" "ecs" {
 
 
 resource "aws_ecs_task_definition" "run_api" {
-  depends_on = [aws_cloudwatch_log_group.ecs]
+  depends_on = [aws_cloudwatch_log_group.ecs, aws_iam_role_policy.database_secret]
 
   family                   = "api-task"
   network_mode             = "awsvpc"
@@ -39,7 +41,6 @@ resource "aws_ecs_task_definition" "run_api" {
   execution_role_arn       = var.execution_role_arn
   task_role_arn            = var.task_role_arn
 
-
   container_definitions = jsonencode([
     {
       name      = var.container_name
@@ -48,14 +49,41 @@ resource "aws_ecs_task_definition" "run_api" {
 
       portMappings = [
         {
-          containerPort = 5000
-          hostPort      = 5000
+          containerPort = var.container_port
+          hostPort      = var.container_port
           protocol      = "tcp"
+        }
+      ]
+
+      environment = [
+        {
+          name  = "DB_HOST"
+          value = var.db_host
+        },
+        {
+          name  = "DB_NAME"
+          value = var.db_name
+        },
+        {
+          name  = "DB_PORT"
+          value = tostring(var.db_port)
+        }
+      ]
+
+      secrets = [
+        {
+          name      = "DB_USER"
+          valueFrom = "${var.db_secret_arn}:username::"
+        },
+        {
+          name      = "DB_PASSWORD"
+          valueFrom = "${var.db_secret_arn}:password::"
         }
       ]
 
       logConfiguration = {
         logDriver = "awslogs"
+
         options = {
           awslogs-group         = var.log_group_name
           awslogs-region        = var.aws_region
@@ -92,11 +120,25 @@ resource "aws_ecs_service" "api_service" {
   load_balancer {
     target_group_arn = var.target_group_arn
     container_name   = var.container_name
-    container_port   = 5000
+    container_port   = var.container_port
   }
   lifecycle {
     ignore_changes = [
       desired_count,
     ]
   }
+}
+
+resource "aws_iam_role_policy" "database_secret" {
+  name = "ecs-database-secret-access"
+  role = var.execution_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = var.db_secret_arn
+    }]
+  })
 }

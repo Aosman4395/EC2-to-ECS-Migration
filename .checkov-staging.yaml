@@ -1,0 +1,17 @@
+# Explicit staging exceptions requested after review. Unlisted checks remain blocking.
+# Plan scanning includes resources from the downloaded RDS community module.
+skip-check:
+  - CKV_AWS_91  # ALB access-log storage deferred for staging.
+  - CKV_AWS_150 # Permit teardown of the staging ALB.
+  - CKV_AWS_157 # Single-AZ RDS for staging cost control.
+  - CKV_AWS_293 # Permit teardown of the staging database.
+  - CKV_AWS_338 # Seven-day application log retention in staging.
+  - CKV_AWS_65  # Paid ECS Container Insights deferred for staging.
+  - CKV_TF_1    # RDS uses an exact registry release (7.2.1), rather than a Git commit.
+  - CKV_AWS_260 # Public HTTP listener only redirects to HTTPS.
+  - CKV_AWS_382 # Accept existing unrestricted ALB/ECS outbound traffic in staging.
+  - CKV_AWS_131 # Accept current ALB header handling in staging; hardening deferred.
+  - CKV_AWS_158 # Use CloudWatch default encryption rather than a customer-managed key.
+  - CKV2_AWS_5  # RDS security group is passed to the external RDS module; verify in plan.
+  - CKV2_AWS_11 # VPC flow logging deferred for staging.
+  - CKV2_AWS_28 # WAF deployment deferred for staging.

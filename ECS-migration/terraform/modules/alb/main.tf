@@ -9,6 +9,7 @@ resource "aws_security_group" "alb_sg" {
 }
 
 resource "aws_security_group_rule" "allow_http_inbound" {
+  description       = "Allow public HTTP requests for redirection to HTTPS"
   type              = "ingress"
   from_port         = 80
   to_port           = 80
@@ -18,6 +19,7 @@ resource "aws_security_group_rule" "allow_http_inbound" {
 }
 
 resource "aws_security_group_rule" "allow_https_inbound" {
+  description       = "Allow public HTTPS requests to the ALB"
   type              = "ingress"
   from_port         = 443
   to_port           = 443
@@ -27,6 +29,7 @@ resource "aws_security_group_rule" "allow_https_inbound" {
 }
 
 resource "aws_security_group_rule" "allow_all_traffic_outbound" {
+  description       = "Allow all outbound traffic from the ALB"
   type              = "egress"
   from_port         = 0
   to_port           = 0
@@ -89,7 +92,7 @@ resource "aws_lb_listener" "ecs_https" {
   load_balancer_arn = aws_lb.ecs_alb.arn
   port              = 443
   protocol          = "HTTPS"
-  ssl_policy        = "ELBSecurityPolicy-2016-08"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
   certificate_arn   = var.certificate_arn
 
   default_action {

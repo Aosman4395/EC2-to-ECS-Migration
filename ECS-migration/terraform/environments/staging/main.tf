@@ -38,14 +38,19 @@ module "ecs" {
   alb_security_group_id = module.alb.alb_sg_id
   target_group_arn      = module.alb.target_group_arn
 
-  execution_role_arn = module.iam.execution_role_arn
-  task_role_arn      = module.iam.task_role_arn
+  execution_role_name = module.iam.execution_role_name
+  execution_role_arn  = module.iam.execution_role_arn
+  task_role_arn       = module.iam.task_role_arn
 
   container_name  = var.container_name
   container_port  = var.container_port
   container_image = var.container_image
   log_group_name  = "/ecs/migration-staging-api"
   aws_region      = var.aws_region
+  db_host         = module.rds.db_instance_address
+  db_name         = module.rds.db_instance_name
+  db_port         = module.rds.db_instance_port
+  db_secret_arn   = module.rds.db_instance_master_user_secret_arn
 }
 
 # RDS Community Module
@@ -56,6 +61,7 @@ resource "aws_security_group" "rds" {
   vpc_id      = module.vpc.vpc_id
 
   ingress {
+    description     = "Allow PostgreSQL connections from ECS tasks"
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
@@ -82,9 +88,10 @@ module "rds" {
   manage_master_user_password_rotation                   = true
   master_user_password_rotation_automatically_after_days = 15
 
-
-  subnet_ids             = module.vpc.rds_private_subnet_ids
-  vpc_security_group_ids = [aws_security_group.rds.id]
+  create_db_parameter_group = false
+  create_db_subnet_group    = true
+  subnet_ids                = module.vpc.rds_private_subnet_ids
+  vpc_security_group_ids    = [aws_security_group.rds.id]
 
   skip_final_snapshot     = true
   publicly_accessible     = false
