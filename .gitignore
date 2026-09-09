@@ -33,3 +33,6 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# EC2 private keys
+*.pem

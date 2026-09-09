@@ -25,7 +25,7 @@ variable "instance_type" {
 variable "key_pair_name" {
   description = "AWS Key Pair name for SSH access"
   type        = string
-  default     = ""
+  default     = "legacy-debug-key"
 }
 
 variable "allowed_cidr_blocks" {

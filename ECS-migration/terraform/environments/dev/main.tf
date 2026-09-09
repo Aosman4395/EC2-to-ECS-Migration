@@ -201,11 +201,12 @@ resource "aws_iam_role_policy" "ec2_s3_access" {
   })
 }
 
-# User data script for EC2 instance
 locals {
   user_data = <<-EOF
 #!/bin/bash
 set -euo pipefail
+
+# App package hash: ${data.archive_file.app.output_base64sha256}
 
 # Variables
 APP_DIR="/opt/flask-app"
@@ -233,7 +234,7 @@ rm app.zip
 # Set ownership
 chown -R ubuntu:ubuntu $APP_DIR
 
-# Run setup script (as root, script handles permissions)
+# Run setup script
 cd $APP_DIR
 chmod +x scripts/setup.sh
 bash $APP_DIR/scripts/setup.sh
@@ -245,13 +246,14 @@ echo "Application setup completed at $(date)" >> /var/log/user-data.log
 
 # EC2 Instance
 resource "aws_instance" "app" {
-  ami                    = "ami-0224ce6f9504665ee"
-  instance_type          = var.instance_type
-  subnet_id              = aws_subnet.public.id
-  vpc_security_group_ids = [aws_security_group.ec2.id]
-  iam_instance_profile   = aws_iam_instance_profile.ec2.name
-  key_name               = var.key_pair_name != "" ? var.key_pair_name : null
-  user_data              = base64encode(local.user_data)
+  ami                         = "ami-0224ce6f9504665ee"
+  instance_type               = var.instance_type
+  subnet_id                   = aws_subnet.public.id
+  vpc_security_group_ids      = [aws_security_group.ec2.id]
+  iam_instance_profile        = aws_iam_instance_profile.ec2.name
+  key_name                    = var.key_pair_name != "" ? var.key_pair_name : null
+  user_data                   = base64encode(local.user_data)
+  user_data_replace_on_change = true
 
   # Ensure S3 object exists before instance starts
   depends_on = [aws_s3_object.app]
