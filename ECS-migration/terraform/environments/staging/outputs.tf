@@ -22,3 +22,8 @@ output "staging_target_group_arn" {
   description = "ARN of the ECS staging target group"
   value       = module.alb.target_group_arn
 }
+
+output "staging_application_url" {
+  description = "HTTP URL of the staging API"
+  value       = "http://${module.alb.dns_name}"
+}

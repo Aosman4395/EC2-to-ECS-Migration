@@ -27,7 +27,6 @@ module "alb" {
   alb_sg_name       = "migration-staging-alb-sg"
   vpc_id            = module.vpc.vpc_id
   public_subnet_ids = module.vpc.public_subnet_ids
-  certificate_arn   = var.certificate_arn
 }
 
 module "ecs" {

@@ -4,11 +4,6 @@ variable "aws_region" {
   default     = "eu-west-2"
 }
 
-variable "certificate_arn" {
-  description = "ACM certificate ARN used by the staging ALB HTTPS listener"
-  type        = string
-}
-
 variable "container_image" {
   description = "ECR image URI and tag to deploy to ECS"
   type        = string

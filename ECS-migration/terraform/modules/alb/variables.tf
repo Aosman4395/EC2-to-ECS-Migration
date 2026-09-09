@@ -14,11 +14,6 @@ variable "vpc_id" {
   type        = string
 }
 
-variable "certificate_arn" {
-  description = "ARN of the ACM certificate for the ALB"
-  type        = string
-}
-
 variable "alb_sg_name" {
   description = "Security group for Application Load Balancer"
   type        = string

@@ -1,6 +1,6 @@
 resource "aws_security_group" "alb_sg" {
   name        = var.alb_sg_name
-  description = "Security group for ALB allowing HTTP/HTTPS inbound traffic"
+  description = "Security group for ALB allowing HTTP inbound traffic"
   vpc_id      = var.vpc_id
 
   tags = {
@@ -9,20 +9,10 @@ resource "aws_security_group" "alb_sg" {
 }
 
 resource "aws_security_group_rule" "allow_http_inbound" {
-  description       = "Allow public HTTP requests for redirection to HTTPS"
+  description       = "Allow public HTTP requests to the staging API"
   type              = "ingress"
   from_port         = 80
   to_port           = 80
-  protocol          = "tcp"
-  cidr_blocks       = ["0.0.0.0/0"]
-  security_group_id = aws_security_group.alb_sg.id
-}
-
-resource "aws_security_group_rule" "allow_https_inbound" {
-  description       = "Allow public HTTPS requests to the ALB"
-  type              = "ingress"
-  from_port         = 443
-  to_port           = 443
   protocol          = "tcp"
   cidr_blocks       = ["0.0.0.0/0"]
   security_group_id = aws_security_group.alb_sg.id
@@ -44,6 +34,8 @@ resource "aws_lb" "ecs_alb" {
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb_sg.id]
   subnets            = var.public_subnet_ids
+
+  drop_invalid_header_fields = true
 
   tags = {
     Name = var.alb_name
@@ -76,24 +68,6 @@ resource "aws_lb_listener" "ecs_http" {
   load_balancer_arn = aws_lb.ecs_alb.arn
   port              = 80
   protocol          = "HTTP"
-
-  default_action {
-    type = "redirect"
-
-    redirect {
-      port        = "443"
-      protocol    = "HTTPS"
-      status_code = "HTTP_301"
-    }
-  }
-}
-
-resource "aws_lb_listener" "ecs_https" {
-  load_balancer_arn = aws_lb.ecs_alb.arn
-  port              = 443
-  protocol          = "HTTPS"
-  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = var.certificate_arn
 
   default_action {
     type             = "forward"

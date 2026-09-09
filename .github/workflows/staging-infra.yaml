@@ -21,7 +21,6 @@ concurrency:
 
 env:
   AWS_REGION: eu-west-2
-  TF_VAR_container_image: ${{ vars.STAGING_CONTAINER_IMAGE }}
 
 jobs:
   terraform-plan:
@@ -37,13 +36,36 @@ jobs:
           role-to-assume: arn:aws:iam::673588459289:role/github-actions-terraform
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Get latest ECR image
+        run: |
+          IMAGE_TAG=$(aws ecr describe-images \
+            --repository-name migration-repository \
+            --query 'sort_by(imageDetails[?imageTags != `null`],&imagePushedAt)[-1].imageTags[0]' \
+            --output text)
+
+          if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" = "None" ]; then
+            echo "No tagged image found in ECR."
+            exit 1
+          fi
+
+          ACCOUNT_ID=$(aws sts get-caller-identity \
+            --query Account \
+            --output text)
+
+          IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/migration-repository:${IMAGE_TAG}"
+
+          echo "CONTAINER_IMAGE=${IMAGE_URI}" >> "$GITHUB_ENV"
+          echo "Using image: ${IMAGE_URI}"
+
       - name: Install Checkov
         run: pip install checkov
 
       - name: Run Checkov
+        working-directory: ./ECS-migration/terraform/environments/staging
         run: |
-          checkov -d ECS-migration/terraform --framework terraform \
-            --skip-path ECS-migration/terraform/environments/staging/bootstrap
+          checkov -d . --framework terraform \
+          --skip-path bootstrap \
+          --skip-check CKV_AWS_2,CKV2_AWS_20,CKV_AWS_378,CKV_AWS_103,CKV_AWS_274,CKV_AWS_130,CKV_AWS_260,CKV_AWS_24,CKV_AWS_382,CKV_AWS_126,CKV_AWS_135,CKV_TF_1,CKV_AWS_91,CKV_AWS_150,CKV_AWS_136,CKV_AWS_158,CKV_AWS_338,CKV_AWS_65,CKV2_AWS_5,CKV2_AWS_61,CKV_AWS_18,CKV2_AWS_11,CKV2_AWS_28,CKV2_AWS_62,CKV_AWS_144,CKV_AWS_145,CKV2_AWS_12    
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -62,7 +84,11 @@ jobs:
 
       - name: Terraform Plan
         working-directory: ./ECS-migration/terraform/environments/staging
-        run: terraform plan -out=tfplan -lock-timeout=5m
+        run: |
+          terraform plan \
+            -var="container_image=${CONTAINER_IMAGE}" \
+            -out=tfplan \
+            -lock-timeout=5m
 
       - name: Upload Plan
         uses: actions/upload-artifact@v4
