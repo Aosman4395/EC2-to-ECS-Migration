@@ -6,11 +6,12 @@ on:
       - main
     paths:
       - "ECS-migration/terraform/environments/dev/**"
+      - "!ECS-migration/terraform/environments/dev/bootstrap/**"
       - "legacy-app/app/**"
       - "legacy-app/nginx/**"
       - "legacy-app/systemd/**"
       - "legacy-app/scripts/**"
-      - ".github/workflows/legacy-ec2.yml"
+      - ".github/workflows/legacy.yaml"
 
   workflow_dispatch:
 
@@ -24,6 +25,8 @@ concurrency:
 
 env:
   AWS_REGION: eu-west-2
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
   WORKING_DIR: ECS-migration/terraform/environments/dev
 
 jobs:
@@ -43,6 +46,8 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.3"
 
       - name: Terraform Format Check
         working-directory: ${{ env.WORKING_DIR }}
@@ -64,7 +69,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: legacy-ec2-tfplan
-          path: ${{ env.WORKING_DIR }}/tfplan
+          path: |
+            ${{ env.WORKING_DIR }}/tfplan
+            ${{ env.WORKING_DIR }}/app.zip
+            ${{ env.WORKING_DIR }}/.terraform.lock.hcl
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 1
 
   apply:
@@ -87,16 +97,18 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
-
-      - name: Terraform Init
-        working-directory: ${{ env.WORKING_DIR }}
-        run: terraform init
+        with:
+          terraform_version: "1.14.3"
 
       - name: Download Terraform Plan
         uses: actions/download-artifact@v4
         with:
           name: legacy-ec2-tfplan
           path: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform init
 
       - name: Terraform Apply
         working-directory: ${{ env.WORKING_DIR }}

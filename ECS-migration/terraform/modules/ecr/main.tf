@@ -6,6 +6,6 @@ resource "aws_ecr_repository" "ecs_ecr_repository" {
     scan_on_push = true
   }
 
-  tags =   var.ecr_repository_tags
+  tags = var.ecr_repository_tags
 
 }

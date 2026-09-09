@@ -7,7 +7,7 @@ variable "ecr_repository_name" {
 variable "ecr_repository_tags" {
   description = "A map of tags to assign to the ECR repository."
   type        = map(string)
-  default     = {
+  default = {
     Name        = "migration-repository"
     Environment = "ECR"
   }

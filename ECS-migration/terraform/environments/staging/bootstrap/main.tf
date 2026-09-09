@@ -40,7 +40,7 @@ resource "aws_s3_bucket_public_access_block" "terraform_state_public_access_bloc
 #ECR repository
 
 module "ecr" {
-  source              = "../infrastructure/modules/ecr"
+  source              = "../../../modules/ecr"
   ecr_repository_name = var.ecr_repository_name
   ecr_repository_tags = var.ecr_repository_tags
 }

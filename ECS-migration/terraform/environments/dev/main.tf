@@ -1,40 +1,3 @@
-terraform {
-  backend "s3" {
-    bucket  = "aosman-ecs-bootstrap-bucket"
-    key     = "legacy/terraform.tfstate"
-    region  = "eu-west-2"
-    encrypt = true
-  }
-
-  required_version = ">= 1.5.0"
-
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-    archive = {
-      source  = "hashicorp/archive"
-      version = "~> 2.4"
-    }
-  }
-}
-
-provider "aws" {
-  region = var.aws_region
-
-  default_tags {
-    tags = merge(
-      {
-        Project     = var.project_name
-        Environment = var.environment
-        ManagedBy   = "Terraform"
-      },
-      var.tags
-    )
-  }
-}
-
 # VPC
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
@@ -173,7 +136,7 @@ resource "aws_iam_instance_profile" "ec2" {
 data "archive_file" "app" {
   type        = "zip"
   output_path = "${path.module}/app.zip"
-  source_dir  = "${path.module}/../"
+  source_dir  = "${path.module}/../../../../legacy-app"
   excludes    = ["terraform", ".git", ".terraform", "*.tfstate", "*.tfstate.backup"]
 }
 
@@ -309,7 +272,7 @@ resource "aws_instance" "app" {
   }
 }
 
-# Elastic IP for EC2 
+# Elastic IP for EC2
 resource "aws_eip" "app" {
   domain   = "vpc"
   instance = aws_instance.app.id
@@ -319,7 +282,7 @@ resource "aws_eip" "app" {
   }
 }
 
-# Route53 Record 
+# Route53 Record
 resource "aws_route53_record" "app" {
   count   = var.domain_name != "" && var.route53_zone_id != "" ? 1 : 0
   zone_id = var.route53_zone_id

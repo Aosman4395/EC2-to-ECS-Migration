@@ -3,6 +3,8 @@
 *.tfstate
 *.tfstate.*
 *.tfplan
+**/tfplan
+**/app.zip
 crash.log
 crash.*.log
 .terraformrc

@@ -3,7 +3,7 @@ data "terraform_remote_state" "legacy_dev" {
   backend = "s3"
 
   config = {
-    bucket = "aosman-ecs-migration-tf-state"
+    bucket = "aosman-ecs-bootstrap-bucket"
     key    = "environments/dev/terraform.tfstate"
     region = var.aws_region
   }
@@ -11,17 +11,17 @@ data "terraform_remote_state" "legacy_dev" {
 
 #New ECS staging environment
 module "vpc" {
-  source = "../../infrastructure/modules/vpc"
+  source = "../../modules/vpc"
 
   vpc_name = "ecs-migration-staging-vpc"
 }
 
 module "iam" {
-  source = "../../infrastructure/modules/iam"
+  source = "../../modules/iam"
 }
 
 module "alb" {
-  source = "../../infrastructure/modules/alb"
+  source = "../../modules/alb"
 
   alb_name          = "migration-staging-alb"
   alb_sg_name       = "migration-staging-alb-sg"
@@ -31,7 +31,7 @@ module "alb" {
 }
 
 module "ecs" {
-  source = "../../infrastructure/modules/ecs"
+  source = "../../modules/ecs"
 
   vpc_id                = module.vpc.vpc_id
   subnet_ids            = module.vpc.ecs_private_subnet_ids
@@ -56,39 +56,39 @@ resource "aws_security_group" "rds" {
   vpc_id      = module.vpc.vpc_id
 
   ingress {
-  from_port       = 5432
-  to_port         = 5432
-  protocol        = "tcp"
-  security_groups = [module.ecs.ecs_security_group_id]
-}
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [module.ecs.ecs_security_group_id]
   }
+}
 
-module "rds"  {
-  source = "terraform-aws-modules/rds/aws"
+module "rds" {
+  source  = "terraform-aws-modules/rds/aws"
   version = "7.2.1"
 
-  identifier = "migration-staging-db"
-  engine = "postgres"
-  engine_version = "17.0"
-  instance_class = "db.t3.micro"
+  identifier        = "migration-staging-db"
+  engine            = "postgres"
+  engine_version    = "17.0"
+  instance_class    = "db.t3.micro"
   allocated_storage = 20
-  storage_type = "gp2"
+  storage_type      = "gp2"
 
-  db_name = "migrationdb"
+  db_name  = "migrationdb"
   username = "admin"
 
   manage_master_user_password = true
 
-  manage_master_user_password_rotation = true
-  master_user_password_rotation_automatically_after_days	 = 15
+  manage_master_user_password_rotation                   = true
+  master_user_password_rotation_automatically_after_days = 15
 
 
-  subnet_ids = module.vpc.rds_private_subnet_ids
+  subnet_ids             = module.vpc.rds_private_subnet_ids
   vpc_security_group_ids = [aws_security_group.rds.id]
 
-  skip_final_snapshot = true
-  publicly_accessible = false
-  deletion_protection = false
+  skip_final_snapshot     = true
+  publicly_accessible     = false
+  deletion_protection     = false
   backup_retention_period = 1
 }
 
