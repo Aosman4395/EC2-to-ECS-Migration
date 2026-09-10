@@ -80,7 +80,7 @@ module "rds" {
   storage_type      = "gp2"
 
   db_name  = "migrationdb"
-  username = "admin"
+  username = "migrationuser"
 
   manage_master_user_password = true
 
