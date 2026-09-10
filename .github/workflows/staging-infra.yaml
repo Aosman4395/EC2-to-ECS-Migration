@@ -1,15 +1,20 @@
 name: Staging Terraform Plan and Apply
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "ECS-migration/terraform/environments/staging/**"
-      - "ECS-migration/terraform/modules/**"
-      - ".github/workflows/staging-infra.yaml"
-
+  workflow_call:
+    inputs:
+      container_image:
+        description: Exact image URI; blank retains the image currently used by ECS
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
+    inputs:
+      container_image:
+        description: Exact image URI; leave blank to retain the current ECS image
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -36,26 +41,40 @@ jobs:
           role-to-assume: arn:aws:iam::673588459289:role/github-actions-terraform
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Get latest ECR image
+      - name: Select deployment image
+        env:
+          REQUESTED_IMAGE: ${{ inputs.container_image }}
         run: |
-          IMAGE_TAG=$(aws ecr describe-images \
-            --repository-name migration-repository \
-            --query 'sort_by(imageDetails[?imageTags != `null`],&imagePushedAt)[-1].imageTags[0]' \
-            --output text)
-
-          if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" = "None" ]; then
-            echo "No tagged image found in ECR."
+          IMAGE_URI="$REQUESTED_IMAGE"
+          if [ -z "$IMAGE_URI" ]; then
+            TASK_DEFINITION=$(aws ecs describe-services \
+              --cluster migration-ecs-cluster \
+              --services api-service \
+              --query 'services[0].taskDefinition' --output text)
+            if [ -z "$TASK_DEFINITION" ] || [ "$TASK_DEFINITION" = "None" ]; then
+              echo "No existing ECS service. Run the build workflow or provide an explicit image URI."
+              exit 1
+            fi
+            aws ecs describe-task-definition \
+              --task-definition "$TASK_DEFINITION" --output json > /tmp/current-task.json
+            IMAGE_URI=$(python3 - <<'PYTHON'
+          import json
+          with open('/tmp/current-task.json') as task_file:
+              task = json.load(task_file)['taskDefinition']
+          containers = [c for c in task['containerDefinitions']
+                        if any(e['name'] == 'DB_HOST' for e in c.get('environment', []))]
+          if len(containers) != 1:
+              raise SystemExit('Cannot identify the API container; provide an explicit image URI.')
+          print(containers[0]['image'])
+          PYTHON
+            )
+          fi
+          if [ -z "$IMAGE_URI" ] || [[ "$IMAGE_URI" =~ [[:space:]] ]]; then
+            echo "Invalid image URI."
             exit 1
           fi
-
-          ACCOUNT_ID=$(aws sts get-caller-identity \
-            --query Account \
-            --output text)
-
-          IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/migration-repository:${IMAGE_TAG}"
-
-          echo "CONTAINER_IMAGE=${IMAGE_URI}" >> "$GITHUB_ENV"
-          echo "Using image: ${IMAGE_URI}"
+          echo "CONTAINER_IMAGE=$IMAGE_URI" >> "$GITHUB_ENV"
+          echo "Deploying image: $IMAGE_URI" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install Checkov
         run: pip install checkov

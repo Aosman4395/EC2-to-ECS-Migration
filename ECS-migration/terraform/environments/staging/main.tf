@@ -84,8 +84,7 @@ module "rds" {
 
   manage_master_user_password = true
 
-  manage_master_user_password_rotation                   = true
-  master_user_password_rotation_automatically_after_days = 15
+  manage_master_user_password_rotation = false
 
   create_db_parameter_group = false
   create_db_subnet_group    = true

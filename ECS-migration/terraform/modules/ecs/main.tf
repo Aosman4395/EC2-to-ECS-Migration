@@ -57,6 +57,10 @@ resource "aws_ecs_task_definition" "run_api" {
 
       environment = [
         {
+          name  = "STORAGE_BACKEND"
+          value = "postgres"
+        },
+        {
           name  = "DB_HOST"
           value = var.db_host
         },
