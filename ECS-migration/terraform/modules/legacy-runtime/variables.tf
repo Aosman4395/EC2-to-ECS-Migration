@@ -1,0 +1,10 @@
+variable "name" { type = string }
+variable "vpc_id" { type = string }
+variable "subnet_id" { type = string }
+variable "alb_security_group_id" { type = string }
+variable "target_group_arn" { type = string }
+variable "ami_id" { type = string }
+variable "instance_type" { type = string }
+variable "aws_region" { type = string }
+variable "app_source_dir" { type = string }
+variable "archive_path" { type = string }

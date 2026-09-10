@@ -1,0 +1,146 @@
+name: Production Terraform Plan and Apply
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ECS-migration/terraform/environments/prod/**"
+      - "ECS-migration/terraform/modules/migration-alb/**"
+      - "ECS-migration/terraform/modules/legacy-runtime/**"
+      - ".github/workflows/prod-infra.yaml"
+      - "scripts/verify-prod.py"
+      - "tests/test_verify_prod.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: terraform-prod
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-2
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  WORKING_DIR: ECS-migration/terraform/environments/prod
+
+jobs:
+  terraform-plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.1.0
+        with:
+          role-to-assume: arn:aws:iam::673588459289:role/github-actions-terraform
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.3"
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive "$WORKING_DIR" ECS-migration/terraform/modules/migration-alb ECS-migration/terraform/modules/legacy-runtime
+      - name: Terraform Init
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform init -input=false
+      - name: Terraform Validate
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform validate
+      - name: Terraform Tests (mock AWS)
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform test
+      - name: Verification Script Tests
+        run: python3 -m unittest discover -s tests -p "test_verify_prod.py"
+      - name: Terraform Plan
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform plan -out=tfplan -lock-timeout=5m
+      - name: Confirm this plan does not cut over traffic
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          terraform show -json tfplan > /tmp/prod-plan.json
+          python3 - <<'PYTHON'
+          import json
+          with open('/tmp/prod-plan.json') as plan_file:
+              plan = json.load(plan_file)
+          weights = plan['planned_values']['outputs']['routing_weights']['value']
+          if weights != {'legacy': 100, 'ecs': 0}:
+              raise SystemExit('This infrastructure phase only permits legacy=100, ECS=0.')
+          PYTHON
+      - name: Upload Plan and Application Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-terraform-plan
+          path: |
+            ${{ env.WORKING_DIR }}/tfplan
+            ${{ env.WORKING_DIR }}/app.zip
+            ${{ env.WORKING_DIR }}/.terraform.lock.hcl
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  terraform-apply:
+    runs-on: ubuntu-latest
+    needs: terraform-plan
+    environment: Production
+    outputs:
+      application_url: ${{ steps.outputs.outputs.application_url }}
+      legacy_target_group_arn: ${{ steps.outputs.outputs.legacy_target_group_arn }}
+      ecs_target_group_arn: ${{ steps.outputs.outputs.ecs_target_group_arn }}
+      listener_arn: ${{ steps.outputs.outputs.listener_arn }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.1.0
+        with:
+          role-to-assume: arn:aws:iam::673588459289:role/github-actions-terraform
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.3"
+          terraform_wrapper: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: prod-terraform-plan
+          path: ${{ env.WORKING_DIR }}
+      - name: Terraform Init
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform init -input=false -lockfile=readonly
+      - name: Terraform Apply
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform apply -auto-approve -lock-timeout=5m tfplan
+      - name: Export Verification Targets
+        id: outputs
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          for name in application_url legacy_target_group_arn ecs_target_group_arn listener_arn; do
+            echo "$name=$(terraform output -raw "$name")" >> "$GITHUB_OUTPUT"
+          done
+
+  attach-ecs:
+    name: Attach production target through the staging-owned ECS service
+    needs: terraform-apply
+    uses: ./.github/workflows/staging-infra.yaml
+    with:
+      container_image: ""
+
+  verify:
+    runs-on: ubuntu-latest
+    needs: [terraform-apply, attach-ecs]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.1.0
+        with:
+          role-to-assume: arn:aws:iam::673588459289:role/github-actions-terraform
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Wait for ECS service
+        run: aws ecs wait services-stable --cluster migration-ecs-cluster --services api-service
+      - name: Verify both targets and production entry point
+        env:
+          APPLICATION_URL: ${{ needs.terraform-apply.outputs.application_url }}
+          LEGACY_TARGET_GROUP_ARN: ${{ needs.terraform-apply.outputs.legacy_target_group_arn }}
+          ECS_TARGET_GROUP_ARN: ${{ needs.terraform-apply.outputs.ecs_target_group_arn }}
+          LISTENER_ARN: ${{ needs.terraform-apply.outputs.listener_arn }}
+        run: python3 scripts/verify-prod.py

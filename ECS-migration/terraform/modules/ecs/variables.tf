@@ -88,3 +88,12 @@ variable "execution_role_name" {
   description = "Name of the ECS execution role receiving database secret access"
   type        = string
 }
+
+variable "additional_load_balancers" {
+  description = "Additional ALB target groups, registered by the existing ECS service."
+  type = map(object({
+    target_group_arn      = string
+    alb_security_group_id = string
+  }))
+  default = {}
+}

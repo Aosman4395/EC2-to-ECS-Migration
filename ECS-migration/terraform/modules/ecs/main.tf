@@ -126,6 +126,14 @@ resource "aws_ecs_service" "api_service" {
     container_name   = var.container_name
     container_port   = var.container_port
   }
+  dynamic "load_balancer" {
+    for_each = var.additional_load_balancers
+    content {
+      target_group_arn = load_balancer.value.target_group_arn
+      container_name   = var.container_name
+      container_port   = var.container_port
+    }
+  }
   lifecycle {
     ignore_changes = [
       desired_count,
@@ -145,4 +153,15 @@ resource "aws_iam_role_policy" "database_secret" {
       Resource = var.db_secret_arn
     }]
   })
+}
+
+resource "aws_security_group_rule" "additional_albs" {
+  for_each                 = var.additional_load_balancers
+  description              = "Application traffic from ${each.key} ALB"
+  type                     = "ingress"
+  from_port                = var.container_port
+  to_port                  = var.container_port
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.ecs_sg.id
+  source_security_group_id = each.value.alb_security_group_id
 }

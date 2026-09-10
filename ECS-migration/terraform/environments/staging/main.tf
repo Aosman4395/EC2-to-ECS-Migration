@@ -41,15 +41,16 @@ module "ecs" {
   execution_role_arn  = module.iam.execution_role_arn
   task_role_arn       = module.iam.task_role_arn
 
-  container_name  = var.container_name
-  container_port  = var.container_port
-  container_image = var.container_image
-  log_group_name  = "/ecs/migration-staging-api"
-  aws_region      = var.aws_region
-  db_host         = module.rds.db_instance_address
-  db_name         = module.rds.db_instance_name
-  db_port         = module.rds.db_instance_port
-  db_secret_arn   = module.rds.db_instance_master_user_secret_arn
+  container_name            = var.container_name
+  container_port            = var.container_port
+  container_image           = var.container_image
+  log_group_name            = "/ecs/migration-staging-api"
+  aws_region                = var.aws_region
+  db_host                   = module.rds.db_instance_address
+  db_name                   = module.rds.db_instance_name
+  db_port                   = module.rds.db_instance_port
+  db_secret_arn             = module.rds.db_instance_master_user_secret_arn
+  additional_load_balancers = local.additional_load_balancers
 }
 
 # RDS Community Module
@@ -98,4 +99,13 @@ module "rds" {
 }
 
 
-# Monitoring and alerting to be added in Production
+# SSM parameter for alb
+data "aws_ssm_parameters_by_path" "prod_integration" {
+  path            = "/ecs-migration/prod/integration/"
+  with_decryption = false
+}
+locals {
+  prod_parameters           = zipmap(data.aws_ssm_parameters_by_path.prod_integration.names, nonsensitive(data.aws_ssm_parameters_by_path.prod_integration.values))
+  prod_alb                  = lookup(local.prod_parameters, "/ecs-migration/prod/integration/alb", null)
+  additional_load_balancers = local.prod_alb == null ? {} : { prod = jsondecode(local.prod_alb) }
+}
