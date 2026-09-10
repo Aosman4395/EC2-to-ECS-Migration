@@ -1,86 +1,152 @@
 # EC2 to ECS Fargate Migration
 
-## Overview
+## Project Overview
 
-This project migrates a legacy Python/Flask ordering API from a single Amazon EC2 instance to a containerised Amazon ECS Fargate platform.
+This project migrates a legacy Python/Flask ordering API from a single Amazon EC2 instance to a containerised Amazon ECS Fargate platform backed by Amazon RDS PostgreSQL.
 
-The migration is being completed incrementally so the original workload can be understood, tested and compared directly with the new platform before traffic is cut over.
+The migration is deliberately split into three environments so the legacy workload can be reproduced first, the new platform can be built and validated alongside it, and production cutover can then be completed with a rollback path available.
 
-**EC2 baseline → Docker → RDS persistence → ECS Fargate → CI/CD → validation → cutover**
+```text
+DEV / LEGACY EC2  ->  STAGING / ECS + RDS  ->  PROD / CUTOVER
+```
 
-The project is documented in three main sections:
+### What the API does
 
-1. [Legacy EC2 Environment](#1-legacy-ec2-environment)
-2. [ECS Fargate Migration Environment](#2-ecs-fargate-migration-environment)
-3. [CI/CD, Security and Validation](#3-cicd-security-and-validation)
+The application is a small ordering API containing three sample products. It supports product reads, order creation, stock updates and basic order statistics.
 
-Test evidence is stored separately under [`tests/`](tests/README.md).
+```text
+GET  /health
+GET  /ready
+GET  /api/v1/products
+GET  /api/v1/products/{id}
+POST /api/v1/orders
+GET  /api/v1/orders
+GET  /api/v1/stats
+```
+
+### Why migrate it?
+
+The legacy application runs on a single EC2 instance behind Nginx and stores its state directly in Python memory. Testing exposed several limitations:
+
+- Single EC2 instance creates a single point of failure.
+- No application autoscaling.
+- Deployments are tied to the server.
+- Orders and stock are stored in memory rather than durable storage.
+- Gunicorn workers can hold separate copies of application state.
+- Restarting the application or EC2 instance loses order and stock changes.
+- Monitoring and logs are tied closely to the host.
+- There is no controlled traffic cutover or rollback mechanism.
+
+### Previous architecture
+
+```text
+Internet
+   |
+   v
+EC2
+   |
+   v
+Nginx :80
+   |
+   v
+Gunicorn :5000
+   |
+   v
+Flask API
+   |
+   v
+Python memory
+```
+
+### Target architecture
+
+```text
+Internet
+   |
+   v
+Application Load Balancer
+   |
+   v
+ECS Fargate Service
+   |
+   v
+Flask API
+   |
+   v
+RDS PostgreSQL
+
+Secrets Manager -> ECS database credentials
+CloudWatch      -> logs / metrics / alarms
+ECR             -> immutable container images
+GitHub Actions  -> CI/CD
+```
+
+The application code is shared between environments. `STORAGE_BACKEND` selects whether the API uses the original memory implementation or PostgreSQL:
+
+```text
+                    app.py
+                      |
+               STORAGE_BACKEND
+                 /         \
+              memory      postgres
+                |            |
+               EC2          RDS
+```
+
+There is no automatic PostgreSQL-to-memory fallback. If PostgreSQL is unavailable, the ECS deployment should expose that failure rather than silently return to non-persistent storage.
 
 ---
 
-# 1. Legacy EC2 Environment
+# DEV — Legacy EC2
 
-## Legacy Architecture
+## Purpose
+
+The dev environment reproduces the original legacy application so its behaviour and limitations can be understood before migration.
+
+It remains the **before state** of the project and later provides the old environment during cutover/rollback testing.
+
+## Architecture
 
 ```text
-Client
-  |
-  v
+Internet
+   |
+   v
 EC2
-  |
-  v
+   |
+   v
 Nginx :80
-  |
-  v
+   |
+   v
 Gunicorn :5000
-  |
-  v
+   |
+   v
 Flask API
-  |
-  v
-Python in-memory storage
+   |
+   v
+MemoryStorage
 ```
 
-The inherited application is a Flask API served by Gunicorn behind Nginx.
+## Infrastructure completed
 
-### API endpoints
+Terraform provisions the legacy environment including:
 
-- `GET /health`
-- `GET /ready`
-- `GET /api/v1/products`
-- `GET /api/v1/products/{id}`
-- `POST /api/v1/orders`
-- `GET /api/v1/orders`
-- `GET /api/v1/stats`
-
-## Legacy Infrastructure
-
-The EC2 environment is provisioned with Terraform and includes:
-
-- VPC and public subnet
+- VPC
+- Public subnet
 - Internet Gateway and routing
 - EC2 instance
 - Security group
-- Elastic/public IPv4 connectivity
+- Public IPv4 connectivity
+- S3 application package
 - Nginx reverse proxy
 - Gunicorn application service
-- S3 application package used during provisioning
 
-The application package hash is included in EC2 user data so application changes can trigger instance replacement when required.
+An application archive hash is included in EC2 user data so application changes can trigger replacement when required.
 
-## Legacy Storage Backend
+Terraform state is stored remotely in S3.
 
-The original application keeps products, stock and orders in Python memory.
+## Application configuration
 
-The shared application code now selects its storage implementation through an environment variable:
-
-```text
-STORAGE_BACKEND=memory
-```
-
-This lets the EC2 environment keep the original legacy behaviour while the ECS environment uses PostgreSQL.
-
-### Legacy environment variables
+The EC2 deployment uses the shared Flask application with the original memory-backed behaviour:
 
 ```text
 APP_NAME=legacy-api
@@ -89,25 +155,27 @@ ENVIRONMENT=production
 STORAGE_BACKEND=memory
 ```
 
-No RDS credentials are required by the EC2 workload.
+No RDS credentials or database networking are required for the legacy environment.
 
-## Legacy Limitations Identified
+## What was validated
 
-- **Single point of failure** — one EC2 instance hosts the application.
-- **No autoscaling** — capacity cannot respond automatically to demand.
-- **Manual/server-based deployments** — application releases are tied to the host.
-- **Limited observability** — logs and operational visibility are tied to the instance.
-- **In-memory state** — orders and stock changes are not durable.
-- **Gunicorn worker inconsistency** — separate worker processes can hold different copies of application state.
-- **Restart data loss** — restarting the application or EC2 instance resets orders and stock.
+The API was tested before and after creating an order. Widget A stock changed from `100` to `98` while the application was running.
 
-Baseline testing confirmed the API worked correctly before migration. Testing also demonstrated the in-memory limitation: after creating an order, restarting EC2 removed the order and returned Widget A stock to its original value.
+The EC2 instance was then manually rebooted. After restart the order disappeared and Widget A returned to stock `100`, confirming that the legacy application state is not durable.
+
+Test evidence is kept in [`tests/`](tests/README.md).
 
 ---
 
-# 2. ECS Fargate Migration Environment
+# STAGING — ECS Fargate Migration
 
-## Target / Staging Architecture
+## Purpose
+
+Staging runs the new ECS/RDS architecture alongside the legacy EC2 environment. This allows the migration to be built, deployed and tested without removing the rollback environment.
+
+The current staging application is exposed through an internet-facing ALB over HTTP while the platform is being validated. HTTPS is reserved for the production phase.
+
+## Architecture
 
 ```text
                          Internet
@@ -124,78 +192,41 @@ Baseline testing confirmed the API worked correctly before migration. Testing al
                             |
                             v
                      RDS PostgreSQL
-                            ^
-                            |
-                    Secrets Manager
+
+              Secrets Manager -> ECS Task
 ```
 
-The staging environment currently uses HTTP intentionally while the migration platform is validated. Production HTTPS/ACM and final traffic cutover will be introduced later.
+## Containerisation and ECR
 
-## Containerisation
+The Flask application was containerised using `python:3.9-slim` and Gunicorn on port `5000`.
 
-The Flask application was containerised before ECS deployment.
+The container:
 
-The Docker image:
+- Runs as a dedicated non-root user.
+- Installs dependencies from `requirements.txt`.
+- Uses `.dockerignore` to reduce unnecessary build context.
+- Contains `app.py`, the storage implementations, `schema.sql` and `init_db.py`.
 
-- Uses `python:3.9-slim`
-- Installs dependencies from `requirements.txt`
-- Runs Gunicorn on port `5000`
-- Runs as a dedicated non-root user
-- Uses `.dockerignore` to reduce unnecessary build context
-- Contains the API, storage implementations, `schema.sql` and `init_db.py`
+Amazon ECR was bootstrapped separately with:
 
-The image is stored in Amazon ECR using immutable image tags.
+- Immutable image tags.
+- Image scanning on push.
+- S3-backed Terraform state for the main staging infrastructure.
 
-## Shared Application / Pluggable Storage
-
-Instead of maintaining separate EC2 and ECS versions of the API, both environments use the same `app.py` and select a storage backend at runtime.
-
-```text
-                    app.py
-                      |
-               STORAGE_BACKEND
-                 /         \
-                /           \
-             memory       postgres
-               |             |
-              EC2           RDS
-```
-
-`storage/__init__.py` selects either:
-
-- `MemoryStorage`
-- `PostgresStorage`
-
-There is deliberately **no silent PostgreSQL-to-memory fallback**. If the ECS PostgreSQL backend is unavailable, the application should expose the failure rather than run with non-persistent state.
-
-## ECS Environment Variables
-
-The ECS task uses:
-
-```text
-STORAGE_BACKEND=postgres
-DB_HOST=<RDS endpoint>
-DB_PORT=5432
-DB_NAME=migrationdb
-DB_USER=<injected from Secrets Manager>
-DB_PASSWORD=<injected from Secrets Manager>
-DB_SSLMODE=require
-```
-
-The database username and password are injected at task startup from AWS Secrets Manager rather than being hardcoded in Terraform or the container image.
+Bootstrap resources are kept separate from normal staging destroy operations.
 
 ## Networking
 
 The staging VPC contains:
 
-- 2 public subnets for internet-facing infrastructure
-- 2 private ECS subnets
-- 2 private RDS subnets
-- Internet Gateway
-- NAT Gateway for ECS private-subnet egress
-- Separate security groups for the ALB, ECS and RDS
+- 2 public subnets.
+- 2 private ECS subnets.
+- 2 private RDS subnets.
+- Internet Gateway.
+- NAT Gateway for private ECS egress.
+- Separate ALB, ECS and RDS security groups.
 
-Traffic flow:
+Application traffic flows as:
 
 ```text
 Internet
@@ -204,240 +235,241 @@ Internet
 ALB :80
    |
    v
-ECS task :5000
+ECS :5000
    |
    v
-RDS PostgreSQL :5432
+RDS :5432
 ```
 
-RDS only permits PostgreSQL traffic from the ECS task security group. RDS is not publicly exposed.
+RDS is private and accepts PostgreSQL traffic on port `5432` only from the ECS task security group.
 
-## RDS PostgreSQL
+## ECS and RDS
 
-Terraform provisions PostgreSQL with:
+ECS Fargate runs the same application code as EC2 but selects PostgreSQL:
+
+```text
+STORAGE_BACKEND=postgres
+DB_HOST=<RDS endpoint>
+DB_PORT=5432
+DB_NAME=migrationdb
+DB_USER=<Secrets Manager>
+DB_PASSWORD=<Secrets Manager>
+DB_SSLMODE=require
+```
+
+RDS PostgreSQL was provisioned with:
 
 ```text
 Database: migrationdb
 Master user: migrationuser
+Instance: db.t3.micro
 Storage: 20 GiB
-Instance class: db.t3.micro
 Credentials: RDS-managed Secrets Manager secret
 ```
 
-Automatic master-password rotation is currently disabled in staging because ECS environment-variable secrets are loaded when a task starts. This avoids a running task retaining an older password after an automatic rotation. A production rotation/redeployment strategy can be added later.
+The database credentials are injected into ECS at task startup rather than stored in the image or hardcoded in Terraform.
 
-## Manual Database Initialisation
+Automatic master-password rotation is currently disabled in staging because ECS environment-variable secrets are loaded at task startup. A production credential-rotation strategy can be introduced later.
 
-Terraform provisions the database server and database, but application tables are deliberately initialised separately.
+## Database initialisation
 
-The existing application image was run as a **temporary one-off ECS task** with its normal Gunicorn command overridden by:
+Terraform creates the RDS database infrastructure, while the application schema is initialised separately.
+
+The existing application image was manually launched as a **temporary one-off ECS task**. Instead of starting Gunicorn, the container command was overridden with:
 
 ```bash
 python init_db.py
 ```
 
-The task reused the existing ECS task definition, private subnets, ECS security group, RDS endpoint and Secrets Manager credentials.
-
-The flow was:
+The temporary task reused the ECS private subnets, ECS security group and task definition configuration. Secrets Manager supplied the database username and password automatically.
 
 ```text
-Terraform creates RDS
-        |
-        v
-Database exists but application tables do not
-        |
-        v
-Run temporary ECS task using application image
-        |
-        v
-Override command -> python init_db.py
-        |
-        v
-Connect privately to RDS using injected credentials
-        |
-        v
-Execute schema.sql
-        |
-        v
-Create products + orders tables
-        |
-        v
-Seed Widget A / B / C
-        |
-        v
-Run storage readiness check
-        |
-        v
-Database schema and sample products are ready
+RDS provisioned
+      |
+      v
+One-off ECS task
+      |
+      v
+python init_db.py
+      |
+      v
+PostgresStorage
+      |
+      v
+schema.sql
+      |
+      v
+products + orders tables
+      |
+      v
+Widget A / B / C seeded
+      |
+      v
+readiness check
 ```
 
-`schema.sql` uses `CREATE TABLE IF NOT EXISTS` and `ON CONFLICT DO NOTHING`, allowing the initial setup command to be rerun without deleting existing orders or resetting existing product rows.
+`schema.sql` uses `CREATE TABLE IF NOT EXISTS` and `ON CONFLICT DO NOTHING`, so rerunning the initial setup does not delete existing orders or reset existing product rows.
 
-The temporary setup task exits after initialisation. The normal ECS service continues to start with Gunicorn.
+The temporary task exits after setup. The ECS service continues to run the normal Gunicorn command.
 
-## Health and Readiness
+## Health and readiness
 
-The application separates process health from storage readiness:
+Two separate checks are used:
 
 ```text
-/health -> Flask/Gunicorn process is alive
-/ready  -> selected storage backend is accessible
+/health -> Flask/Gunicorn process is running
+/ready  -> configured storage backend is accessible
 ```
 
-For ECS, a successful readiness response is:
+The ALB uses `/health` for its health check. `/ready` is used to verify the application's selected storage backend and database access.
 
-```json
-{"status":"ready","storage":"postgres"}
-```
+## CI/CD
 
-The ALB health check remains `/health`; `/ready` is used for application/database validation.
-
-## Persistence Validation
-
-ECS testing confirmed:
-
-- Health endpoint works through the ALB.
-- PostgreSQL readiness succeeds.
-- Three seeded products can be read from RDS.
-- Orders can be created through the API.
-- Product stock is updated transactionally.
-- Statistics reflect persisted order data.
-- Data survives ECS task replacement.
-
-A test order for two units of Widget A produced:
-
-```text
-Orders:        1
-Widget A:      stock 100 -> 98
-Total revenue: 59.98
-```
-
-After forcing a new ECS deployment, those values remained unchanged, confirming that application state is persisted in RDS rather than inside the container.
-
----
-
-# 3. CI/CD, Security and Validation
-
-## GitHub Actions Deployment Flow
-
-The staging delivery process uses two connected GitHub Actions workflows:
+GitHub Actions now controls the staging application and Terraform deployment flow.
 
 ```text
 Push to main
-    |
-    v
+      |
+      v
 Detect changed files
-    |
-    +-------------------------------+
-    |                               |
-App change                      Infra-only change
-    |                               |
-    v                               v
-Build Docker image              Skip image build
-    |
-    v
-Trivy scan
-    |
-    v
-Push immutable image to ECR
-    |                               |
-    +---------------+---------------+
-                    |
-                    v
-          Call staging Terraform workflow
-                    |
-                    v
-                 Checkov
-                    |
-                    v
-             terraform fmt
-                    |
-                    v
-             terraform init
-                    |
-                    v
-           terraform validate
-                    |
-                    v
-             terraform plan
-                    |
-                    v
-        Upload saved Terraform plan
-                    |
-                    v
-        GitHub Environment approval
-                    |
-                    v
-             terraform apply
+      |
+      +-----------------------------+
+      |                             |
+ Application change           Infra-only change
+      |                             |
+      v                             v
+ Build Docker image             Skip build
+      |
+      v
+ Trivy scan
+      |
+      v
+ Push immutable image to ECR
+      |                             |
+      +--------------+--------------+
+                     |
+                     v
+          Staging Terraform workflow
+                     |
+                     v
+                  Checkov
+                     |
+                     v
+          fmt / init / validate
+                     |
+                     v
+              Terraform plan
+                     |
+                     v
+          Migration approval
+                     |
+                     v
+              Terraform apply
 ```
 
-### Change-aware image deployment
-
-Application changes build a new image and pass the **exact immutable image URI** into the reusable staging Terraform workflow.
-
-Image tags use:
+Application changes pass the **exact immutable image URI** into the staging Terraform workflow. Image tags use:
 
 ```text
 <commit-sha>-<workflow-run-id>-<run-attempt>
 ```
 
-This avoids collisions with immutable ECR tags and makes each deployed image traceable to a specific GitHub commit and workflow execution.
+For infrastructure-only changes, no unnecessary image is built. The workflow retains the exact image currently used by the ECS service.
 
-For infrastructure-only changes, the build job is skipped. The staging workflow reads the image currently used by the ECS service and retains that exact image during Terraform deployment rather than selecting an arbitrary latest ECR image.
+The staging pipeline includes:
 
-This provides deterministic deployments while avoiding unnecessary Docker builds.
+- GitHub Actions AWS authentication through OIDC.
+- Trivy image scanning.
+- Checkov Terraform scanning.
+- Terraform format and validation checks.
+- Saved Terraform plans.
+- GitHub `Migration` environment approval before apply.
+- Workflow concurrency protection.
 
-## CI/CD Security Controls
+## Security controls implemented
 
-Current controls include:
+- ECS tasks run in private subnets.
+- RDS runs in private subnets.
+- RDS access is restricted to the ECS security group.
+- Database connections require SSL by default.
+- Secrets Manager stores database credentials.
+- Docker runs as non-root.
+- ECR tags are immutable.
+- ECR scanning is enabled.
+- GitHub Actions uses OIDC instead of long-lived AWS credentials.
+- Terraform is scanned with Checkov.
+- Container images are scanned with Trivy.
+- Manual approval protects Terraform apply.
 
-- GitHub Actions → AWS authentication using **OIDC** instead of stored long-lived AWS access keys
-- **Trivy** container image scanning
-- **Checkov** Terraform scanning
-- Docker container runs as a **non-root user**
-- ECS tasks deployed in **private subnets**
-- RDS deployed in **private subnets**
-- Security-group restricted ECS → RDS access on port `5432`
-- Database credentials stored in **AWS Secrets Manager**
-- ECR **immutable image tags**
-- ECR image scanning enabled
-- Terraform remote state stored in S3
-- GitHub **Migration environment approval** before Terraform apply
-- Saved Terraform plan is applied after approval so the reviewed plan is the one deployed
-- Workflow concurrency prevents overlapping staging Terraform deployments
+## What was validated
 
-## Validation Completed
+Staging successfully passed health, PostgreSQL readiness, API read/write and persistence testing.
 
-The current migration has successfully validated both sides of the comparison:
+An order reduced Widget A from `100` to `98` and produced revenue of `59.98`. A new ECS deployment was then forced and the same order, stock and revenue remained, confirming that state now lives in RDS rather than inside the compute layer.
 
-| Validation | Legacy EC2 | ECS Fargate + RDS |
-| --- | --- | --- |
-| Process health | ✅ | ✅ |
-| Storage readiness | ✅ memory | ✅ postgres |
-| Read products | ✅ | ✅ |
-| Create order | ✅ | ✅ |
-| Update stock | ✅ | ✅ |
-| Stats endpoint | ✅ | ✅ |
-| Survives compute restart/replacement | ❌ | ✅ |
-| Shared persistent storage | ❌ | ✅ |
-| Private database | N/A | ✅ |
-| Automated image/infrastructure pipeline | ❌ | ✅ |
+The complete application-change pipeline also ran successfully from change detection through image build/push and Terraform deployment.
 
-The evidence for these tests is documented in [`tests/README.md`](tests/README.md).
+Screenshots and short test evidence are kept in [`tests/`](tests/README.md).
 
-## Current Migration Status
+---
 
-The staging platform is now functionally validated:
+# PROD — Cutover
+
+## Purpose
+
+Production is the final migration phase. It will promote the validated ECS/RDS design into the production traffic path while keeping the legacy EC2 environment available temporarily for rollback.
+
+## Planned production architecture
 
 ```text
-Legacy EC2                ECS migration platform
------------               ----------------------
-Nginx                     Application Load Balancer
-Gunicorn                  ECS Fargate
-Flask API                 Same Flask API
-Memory storage      ->    RDS PostgreSQL
-Host-bound state          Persistent shared state
-Manual/server model       Automated CI/CD model
+                    Internet
+                       |
+                       v
+                 HTTPS :443
+                       |
+                       v
+             Application Load Balancer
+                       |
+                       v
+                ECS Fargate Service
+                       |
+                       v
+                  RDS PostgreSQL
 ```
 
-The next major phase is the **controlled EC2 → ECS traffic cutover and rollback strategy**. The legacy EC2 environment will remain available during the rollback window until the ECS platform is considered stable.
+Production will add the controls that were intentionally not required while proving the staging migration, including HTTPS/TLS and the final traffic cutover mechanism.
+
+## Cutover plan
+
+The remaining production work is:
+
+- Introduce HTTPS using ACM.
+- Establish the production traffic entry point.
+- Deploy/promote the validated ECS/RDS platform.
+- Perform final health and readiness checks.
+- Switch production traffic from legacy EC2 to ECS.
+- Monitor the new platform through the rollback window.
+- Keep EC2 available temporarily as the rollback target.
+- Roll traffic back to EC2 if a critical issue is found.
+- Decommission the legacy environment only after ECS is confirmed stable.
+- Add CloudWatch dashboards, alarms and ECS Service Auto Scaling as part of the production operational layer.
+
+The exact traffic-switch mechanism will be implemented in the next phase of the project.
+
+---
+
+## Migration Status
+
+```text
+DEV                              STAGING                         PROD
+Legacy EC2                       ECS Fargate + RDS               Cutover
+-----------                      -----------------               -------
+Terraform EC2        DONE        Docker / ECR        DONE        HTTPS / ACM       NEXT
+Legacy API           DONE        ALB                 DONE        Traffic switch    NEXT
+Memory backend       DONE        ECS Fargate         DONE        Rollback test      NEXT
+Legacy limitations   PROVEN      RDS PostgreSQL      DONE        Monitoring         NEXT
+Restart data loss    PROVEN      Secrets Manager     DONE        Auto Scaling       NEXT
+                                  CI/CD               DONE        Decommission EC2   LATER
+                                  Persistence         PROVEN
+```
+
+The migration is currently at the end of **staging validation** and ready to move into the **production cutover phase**.
