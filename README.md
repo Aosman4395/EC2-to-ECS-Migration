@@ -1,5 +1,37 @@
 # EC2 to ECS Fargate Migration
 
+## Contents
+
+- [Project Overview](#project-overview)
+  - [What the API does](#what-the-api-does)
+  - [Why migrate it?](#why-migrate-it)
+  - [Previous architecture](#previous-architecture)
+  - [Target architecture](#target-architecture)
+- [DEV — Legacy EC2](#dev--legacy-ec2)
+  - [Purpose](#purpose)
+  - [Architecture](#architecture)
+  - [Infrastructure completed](#infrastructure-completed)
+  - [Application configuration](#application-configuration)
+  - [What was validated](#what-was-validated)
+- [STAGING — ECS Fargate Migration](#staging--ecs-fargate-migration)
+  - [Purpose](#purpose-1)
+  - [Architecture](#architecture-1)
+  - [Containerisation and ECR](#containerisation-and-ecr)
+  - [Networking](#networking)
+  - [ECS and RDS](#ecs-and-rds)
+  - [Database initialisation](#database-initialisation)
+  - [Health and readiness](#health-and-readiness)
+  - [CI/CD](#cicd)
+  - [Security controls implemented](#security-controls-implemented)
+  - [What was validated](#what-was-validated-1)
+- [PROD — Cutover](#prod--cutover)
+  - [Purpose](#purpose-2)
+  - [Planned production architecture](#planned-production-architecture)
+  - [Cutover plan](#cutover-plan)
+- [Migration Status](#migration-status)
+
+---
+
 ## Project Overview
 
 This project migrates a legacy Python/Flask ordering API from a single Amazon EC2 instance to a containerised Amazon ECS Fargate platform backed by Amazon RDS PostgreSQL.
