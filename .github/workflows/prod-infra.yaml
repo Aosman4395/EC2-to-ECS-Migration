@@ -9,6 +9,8 @@ on:
       - "ECS-migration/terraform/modules/legacy-runtime/**"
       - ".github/workflows/prod-infra.yaml"
       - "scripts/verify-prod.py"
+      - "scripts/prod-routing.py"
+      - "tests/test_prod_routing.py"
       - "tests/test_verify_prod.py"
   workflow_dispatch:
 
@@ -39,6 +41,7 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.14.3"
+          terraform_wrapper: false
       - name: Terraform Format Check
         run: terraform fmt -check -recursive "$WORKING_DIR" ECS-migration/terraform/modules/migration-alb ECS-migration/terraform/modules/legacy-runtime
       - name: Terraform Init
@@ -51,22 +54,20 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
         run: terraform test
       - name: Verification Script Tests
-        run: python3 -m unittest discover -s tests -p "test_verify_prod.py"
+        run: |
+          python3 -m unittest discover -s tests -p "test_verify_prod.py"
+          python3 -m unittest discover -s tests -p "test_prod_routing.py"
+      - name: Preserve current routing from prod state
+        working-directory: ${{ env.WORKING_DIR }}
+        run: python3 "$GITHUB_WORKSPACE/scripts/prod-routing.py" preserve
       - name: Terraform Plan
         working-directory: ${{ env.WORKING_DIR }}
         run: terraform plan -out=tfplan -lock-timeout=5m
-      - name: Confirm this plan does not cut over traffic
+      - name: Confirm infrastructure plan preserves routing
         working-directory: ${{ env.WORKING_DIR }}
         run: |
           terraform show -json tfplan > /tmp/prod-plan.json
-          python3 - <<'PYTHON'
-          import json
-          with open('/tmp/prod-plan.json') as plan_file:
-              plan = json.load(plan_file)
-          weights = plan['planned_values']['outputs']['routing_weights']['value']
-          if weights != {'legacy': 100, 'ecs': 0}:
-              raise SystemExit('This infrastructure phase only permits legacy=100, ECS=0.')
-          PYTHON
+          python3 "$GITHUB_WORKSPACE/scripts/prod-routing.py" check --plan /tmp/prod-plan.json
       - name: Upload Plan and Application Package
         uses: actions/upload-artifact@v4
         with:
@@ -84,6 +85,7 @@ jobs:
     needs: terraform-plan
     environment: Production
     outputs:
+      expected_backend: ${{ steps.routing.outputs.expected_backend }}
       application_url: ${{ steps.outputs.outputs.application_url }}
       legacy_target_group_arn: ${{ steps.outputs.outputs.legacy_target_group_arn }}
       ecs_target_group_arn: ${{ steps.outputs.outputs.ecs_target_group_arn }}
@@ -109,6 +111,10 @@ jobs:
       - name: Terraform Apply
         working-directory: ${{ env.WORKING_DIR }}
         run: terraform apply -auto-approve -lock-timeout=5m tfplan
+      - name: Read applied routing
+        id: routing
+        working-directory: ${{ env.WORKING_DIR }}
+        run: python3 "$GITHUB_WORKSPACE/scripts/prod-routing.py" export
       - name: Export Verification Targets
         id: outputs
         working-directory: ${{ env.WORKING_DIR }}
@@ -139,8 +145,9 @@ jobs:
         run: aws ecs wait services-stable --cluster migration-ecs-cluster --services api-service
       - name: Verify both targets and production entry point
         env:
+          EXPECTED_BACKEND: ${{ needs.terraform-apply.outputs.expected_backend }}
           APPLICATION_URL: ${{ needs.terraform-apply.outputs.application_url }}
           LEGACY_TARGET_GROUP_ARN: ${{ needs.terraform-apply.outputs.legacy_target_group_arn }}
           ECS_TARGET_GROUP_ARN: ${{ needs.terraform-apply.outputs.ecs_target_group_arn }}
           LISTENER_ARN: ${{ needs.terraform-apply.outputs.listener_arn }}
-        run: python3 scripts/verify-prod.py
+        run: python3 scripts/verify-prod.py --destination "$EXPECTED_BACKEND"

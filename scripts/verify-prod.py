@@ -1,4 +1,5 @@
 """Read-only post-apply checks. Never changes listener weights or creates orders."""
+import argparse
 import json
 import os
 import subprocess
@@ -17,16 +18,17 @@ def targets_ready(descriptions):
     )
 
 
-def main():
+def main(destination="legacy", preflight=False, destination_only=False):
     groups = {
         'legacy': os.environ['LEGACY_TARGET_GROUP_ARN'],
         'ecs': os.environ['ECS_TARGET_GROUP_ARN'],
     }
+    checked_groups = {destination: groups[destination]} if preflight or destination_only else groups
     deadline = time.monotonic() + 900
     while True:
         results = {
             name: aws('elbv2', 'describe-target-health', '--target-group-arn', arn)['TargetHealthDescriptions']
-            for name, arn in groups.items()
+            for name, arn in checked_groups.items()
         }
         print(json.dumps(results), flush=True)
         if all(targets_ready(items) for items in results.values()):
@@ -35,18 +37,33 @@ def main():
             raise SystemExit('Targets did not become healthy within 15 minutes. Inspect startup and application logs.')
         time.sleep(20)
 
+    if preflight:
+        print(f'Destination {destination} has healthy targets.')
+        return
+
     listener = aws('elbv2', 'describe-listeners', '--listener-arns', os.environ['LISTENER_ARN'])['Listeners'][0]
     forward = next(action['ForwardConfig'] for action in listener['DefaultActions'] if action['Type'] == 'forward')
     weights = {group['TargetGroupArn']: group['Weight'] for group in forward['TargetGroups']}
-    # This infrastructure-only phase must not cut over.
-    if weights.get(groups['legacy']) != 100 or weights.get(groups['ecs']) != 0:
-        raise SystemExit('Expected initial 100/0 routing. No automatic weight change was attempted.')
+    expected = {groups['legacy']: 100 if destination == 'legacy' else 0,
+                groups['ecs']: 100 if destination == 'ecs' else 0}
+    if weights != expected:
+        raise SystemExit(f'Unexpected listener weights: {weights}; expected {expected}')
 
-    with urllib.request.urlopen(os.environ['APPLICATION_URL'] + '/ready', timeout=15) as response:
-        ready = json.load(response)
-    if ready != {'status': 'ready', 'storage': 'memory'}:
-        raise SystemExit(f'Unexpected initial production readiness response: {ready}')
-    message = 'Production ALB verified: both target groups healthy; routing remains legacy=100, ECS=0.'
+    # Allow a short propagation interval after the listener update.
+    expected_storage = 'postgres' if destination == 'ecs' else 'memory'
+    deadline = time.monotonic() + 120
+    while True:
+        try:
+            with urllib.request.urlopen(os.environ['APPLICATION_URL'] + '/ready', timeout=15) as response:
+                ready = json.load(response)
+            if ready == {'status': 'ready', 'storage': expected_storage}:
+                break
+        except (OSError, ValueError) as error:
+            ready = str(error)
+        if time.monotonic() >= deadline:
+            raise SystemExit(f'Unexpected production readiness response: {ready}')
+        time.sleep(5)
+    message = f'Production verified: checked targets healthy; routing destination={destination}, storage={expected_storage}.'
     print(message)
     summary = os.environ.get('GITHUB_STEP_SUMMARY')
     if summary:
@@ -55,4 +72,9 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--destination', choices=['legacy', 'ecs'], default='legacy')
+    parser.add_argument('--preflight', action='store_true')
+    parser.add_argument('--destination-only', action='store_true')
+    args = parser.parse_args()
+    main(args.destination, args.preflight, args.destination_only)

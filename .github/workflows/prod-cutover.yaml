@@ -1,0 +1,116 @@
+name: Production Cutover or Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      destination:
+        description: 'ecs = cutover to RDS-backed API; legacy = routing rollback (data is not copied)'
+        required: true
+        type: choice
+        options: [ecs, legacy]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: terraform-prod
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-2
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  WORKING_DIR: ECS-migration/terraform/environments/prod
+  DESTINATION: ${{ inputs.destination }}
+  TF_VAR_legacy_weight: ${{ inputs.destination == 'legacy' && '100' || '0' }}
+  TF_VAR_ecs_weight: ${{ inputs.destination == 'ecs' && '100' || '0' }}
+
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.1.0
+        with:
+          role-to-assume: arn:aws:iam::673588459289:role/github-actions-terraform
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.3"
+          terraform_wrapper: false
+      - name: Test routing checks
+        run: |
+          python3 -m unittest discover -s tests -p "test_prod_routing.py"
+          python3 -m unittest discover -s tests -p "test_verify_prod.py"
+      - name: Terraform Init and Validate
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          terraform init -input=false -lockfile=readonly
+          terraform validate
+      - name: Load existing production endpoints
+        working-directory: ${{ env.WORKING_DIR }}
+        run: python3 "$GITHUB_WORKSPACE/scripts/prod-routing.py" export
+      - name: Check destination health
+        run: python3 scripts/verify-prod.py --destination "$DESTINATION" --preflight
+      - name: Plan and restrict changes to listener weights
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          terraform plan -out=tfplan -lock-timeout=5m
+          terraform show -json tfplan > /tmp/cutover-plan.json
+          python3 "$GITHUB_WORKSPACE/scripts/prod-routing.py" check --plan /tmp/cutover-plan.json --cutover
+          echo "Requested routing destination: $DESTINATION. Review the Terraform plan before approval." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prod-cutover-plan
+          path: |
+            ${{ env.WORKING_DIR }}/tfplan
+            ${{ env.WORKING_DIR }}/app.zip
+            ${{ env.WORKING_DIR }}/.terraform.lock.hcl
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  apply:
+    runs-on: ubuntu-latest
+    needs: plan
+    environment: Production
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.1.0
+        with:
+          role-to-assume: arn:aws:iam::673588459289:role/github-actions-terraform
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.3"
+          terraform_wrapper: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: prod-cutover-plan
+          path: ${{ env.WORKING_DIR }}
+      - name: Terraform Init
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform init -input=false -lockfile=readonly
+      - name: Load production endpoints
+        working-directory: ${{ env.WORKING_DIR }}
+        run: python3 "$GITHUB_WORKSPACE/scripts/prod-routing.py" export
+      - name: Recheck destination after approval
+        run: python3 scripts/verify-prod.py --destination "$DESTINATION" --preflight
+      - name: Recheck saved plan and apply
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          terraform show -json tfplan > /tmp/cutover-plan.json
+          python3 "$GITHUB_WORKSPACE/scripts/prod-routing.py" check --plan /tmp/cutover-plan.json --cutover
+          terraform apply -auto-approve -lock-timeout=5m tfplan
+      - name: Verify routing and API readiness
+        run: python3 scripts/verify-prod.py --destination "$DESTINATION" --destination-only
+      - name: Failure guidance
+        if: failure()
+        run: |
+          echo "Cutover failed or verification did not pass. Inspect live listener weights and Terraform state before retrying. No automatic rollback was performed; to request a routing rollback, run this workflow with destination=legacy. RDS orders are not copied to legacy memory." >> "$GITHUB_STEP_SUMMARY"
