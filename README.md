@@ -279,9 +279,7 @@ The migration was managed through a **GitHub Projects Kanban backlog** rather th
 
 This made the migration incremental: each phase had a clear acceptance point before the next phase was started, while the board tracked work through Ready, In Progress, In Review and Done.
 
-> **Project board screenshot:** upload the supplied board image to `ECS-migration/project-management/tickets-board.png`, then the image below will render in the repository.
-
-![GitHub Projects migration backlog](ECS-migration/project-management/tickets-board.png)
+![GitHub Projects migration backlog](ECS-migration/project-management/tickets-board.png.png)
 
 ---
 
