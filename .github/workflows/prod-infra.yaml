@@ -11,6 +11,7 @@ on:
       - "scripts/verify-prod.py"
       - "scripts/prod-routing.py"
       - "!**/tests/**"
+      
   workflow_dispatch:
 
 permissions:

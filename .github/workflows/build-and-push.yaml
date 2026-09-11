@@ -12,7 +12,7 @@ on:
       - "ECS-migration/terraform/environments/staging/**"
       - "ECS-migration/terraform/modules/**"
       - ".github/workflows/staging-infra.yaml"
-      - "!**/tests/**"
+      - "!**/tests/**" 
 
   workflow_dispatch:
 

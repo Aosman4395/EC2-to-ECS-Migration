@@ -12,7 +12,7 @@ on:
       - "legacy-app/systemd/**"
       - "legacy-app/scripts/**"
       - ".github/workflows/legacy.yaml"
-      - "!**/tests/**"
+      - "!**/tests/**" 
 
   workflow_dispatch:
 
