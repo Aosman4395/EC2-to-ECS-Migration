@@ -12,6 +12,7 @@ on:
       - "ECS-migration/terraform/environments/staging/**"
       - "ECS-migration/terraform/modules/**"
       - ".github/workflows/staging-infra.yaml"
+      - "!**/tests/**"
 
   workflow_dispatch:
 
@@ -59,7 +60,7 @@ jobs:
               )
               paths = result.stdout.decode().split('\0')
               build = any(
-                  path.startswith('legacy-app/app/') or path in {
+                  ('tests' not in Path(path).parts and path.startswith('legacy-app/app/')) or path in {
                       'dockerfile', '.dockerignore', '.github/workflows/build-and-push.yaml'
                   }
                   for path in paths

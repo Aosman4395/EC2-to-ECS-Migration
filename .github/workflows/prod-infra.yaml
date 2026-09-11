@@ -10,8 +10,7 @@ on:
       - ".github/workflows/prod-infra.yaml"
       - "scripts/verify-prod.py"
       - "scripts/prod-routing.py"
-      - "tests/test_prod_routing.py"
-      - "tests/test_verify_prod.py"
+      - "!**/tests/**"
   workflow_dispatch:
 
 permissions:
