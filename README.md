@@ -4,10 +4,10 @@
 
 This project demonstrates an end-to-end migration of a legacy Python/Flask ordering API from a single Amazon EC2 instance with in-memory state to a containerised Amazon ECS Fargate platform backed by Amazon RDS PostgreSQL.
 
-Rather than replacing the legacy workload in one step, the migration was delivered through **dev, staging and production phases**. The original application was first reproduced and its limitations proven, the ECS/RDS platform was then built and validated alongside it, and finally a controlled production cutover moved 100% of traffic from EC2 to ECS.
+Rather than replacing the legacy workload in one step, the migration was delivered through **dev, staging and production phases**. The original application was first reproduced and its limitations proven. Before building the ECS migration target, the application was then refactored so the **same codebase** could support both the original in-memory behaviour and a new PostgreSQL-backed persistence layer. The ECS/RDS platform was then built and validated alongside the legacy path, and finally a controlled production cutover moved 100% of traffic from EC2 to ECS.
 
 ```text
-DEV / LEGACY EC2  ->  STAGING / ECS + RDS  ->  PROD / CONTROLLED CUTOVER
+DEV / LEGACY EC2  ->  APP PERSISTENCE REFACTOR  ->  STAGING / ECS + RDS  ->  PROD / CONTROLLED CUTOVER
 ```
 
 The project uses **Terraform, AWS, Docker, GitHub Actions, OIDC, ECR, ECS Fargate, RDS PostgreSQL, Secrets Manager, CloudWatch, ALB, Trivy and Checkov**.
@@ -40,10 +40,14 @@ GET  /api/v1/orders
 GET  /api/v1/stats
 ```
 
-The same application code supports both sides of the migration. `STORAGE_BACKEND` selects the storage implementation:
+A key part of the migration was avoiding two separate application implementations. After validating the original EC2 application, the storage logic was separated from the API so the **same Flask application** could use either the original memory store or PostgreSQL.
+
+`STORAGE_BACKEND` selects the implementation at runtime:
 
 ```text
                     Flask API
+                       |
+                storage interface
                        |
                 STORAGE_BACKEND
                   /          \
@@ -51,6 +55,8 @@ The same application code supports both sides of the migration. `STORAGE_BACKEND
                  |             |
              Legacy EC2       RDS
 ```
+
+The legacy path therefore keeps the original behaviour with `STORAGE_BACKEND=memory`, while ECS runs the same application with `STORAGE_BACKEND=postgres`. This allowed persistence to be introduced without rewriting the API or maintaining a separate ECS version of the application.
 
 There is deliberately no automatic PostgreSQL-to-memory fallback. If the database is unavailable, readiness fails rather than silently falling back to non-persistent storage.
 
@@ -80,6 +86,23 @@ Python memory
 ```
 
 The legacy design had several limitations: a single point of failure, no application autoscaling, server-coupled deployments, non-durable order/stock state, inconsistent state between Gunicorn workers, and host-dependent operations.
+
+### Application persistence refactor
+
+The dev tests proved that compute and application state were tightly coupled. Moving the same application into multiple ECS tasks without changing that design would simply reproduce the state-consistency problem inside containers.
+
+To solve this without creating a second application, storage was abstracted into two interchangeable implementations:
+
+```text
+Original behaviour                 Migration behaviour
+------------------                 -------------------
+MemoryStorage                      PostgresStorage
+STORAGE_BACKEND=memory             STORAGE_BACKEND=postgres
+Legacy EC2                         ECS Fargate
+Volatile process memory            Durable RDS PostgreSQL
+```
+
+The API routes continue to call the same storage operations; only the selected backend changes. PostgreSQL support, database initialisation and readiness checks were added so the application could safely move from ephemeral compute state to persistent database state while preserving the original memory mode for migration comparison and cutover.
 
 ### After
 
@@ -123,6 +146,8 @@ STORAGE_BACKEND=memory
 
 The legacy API was validated with real requests. Testing demonstrated that in-memory state was not reliable: order/stock results could become inconsistent between requests and state was lost when the application/runtime restarted.
 
+Those findings directly drove the persistence refactor used in staging: the API itself was retained, while storage was made selectable between `MemoryStorage` and `PostgresStorage`.
+
 Detailed dev validation and screenshots are intentionally kept out of this main README and are documented in [`ECS-migration/terraform/environments/dev/tests/`](ECS-migration/terraform/environments/dev/tests/README.md).
 
 ---
@@ -132,6 +157,8 @@ Detailed dev validation and screenshots are intentionally kept out of this main 
 ## Purpose
 
 Staging built the migration destination alongside the legacy environment so the new platform could be tested before any production traffic was moved.
+
+Crucially, staging did **not** introduce a separate application. It used the refactored version of the same Flask API and switched only its storage backend from memory to PostgreSQL. This meant the migration could compare both runtimes using the same endpoints and business logic while changing where application state was stored.
 
 ## Architecture
 
@@ -164,7 +191,7 @@ Application changes are built into unique images using the commit SHA, workflow 
 
 ## ECS and PostgreSQL
 
-ECS Fargate runs the application with:
+ECS Fargate runs the same application with the persistent backend selected:
 
 ```text
 STORAGE_BACKEND=postgres
@@ -176,7 +203,7 @@ DB_PASSWORD=<Secrets Manager>
 DB_SSLMODE=require
 ```
 
-Database credentials are supplied through Secrets Manager rather than stored in the image or hardcoded in Terraform.
+The PostgreSQL storage implementation provides persistent products, orders and statistics while the original memory implementation remains available for the legacy runtime. Database credentials are supplied through Secrets Manager rather than stored in the image or hardcoded in Terraform.
 
 The schema was initialised using a temporary one-off ECS task running `python init_db.py`. The schema is idempotent, allowing initialisation to be rerun without deleting existing orders or resetting seeded products.
 
@@ -184,7 +211,7 @@ The schema was initialised using a temporary one-off ECS task running `python in
 
 The staging platform includes ECS Service Auto Scaling and CloudWatch monitoring/alarms. `/health` verifies the application process, while `/ready` verifies that the configured storage backend is actually accessible.
 
-Staging validation proved that the API could create and retrieve orders through ECS/RDS and that the data survived ECS task replacement. This demonstrated the key migration outcome: **state moved out of the compute layer and into durable PostgreSQL storage**.
+Staging validation proved that the API could create and retrieve orders through ECS/RDS and that the data survived ECS task replacement. This demonstrated the key migration outcome: **state moved out of the compute layer and into durable PostgreSQL storage while the application interface remained unchanged**.
 
 The full staging test evidence is documented in [`ECS-migration/terraform/environments/staging/tests/`](ECS-migration/terraform/environments/staging/tests/README.md).
 
@@ -196,7 +223,7 @@ The full staging test evidence is documented in [`ECS-migration/terraform/enviro
 
 Production introduced a dedicated migration entry point and a controlled traffic-switch mechanism. The validated ECS/RDS platform remained owned by staging Terraform rather than being duplicated into a second ECS/RDS stack.
 
-Because the original dev VPC and staging VPC both use `10.0.0.0/16`, the original EC2 instance could not simply be routed behind the production ALB. A replacement legacy runtime was therefore created inside the staging VPC using the same frozen memory-backed application behaviour.
+Because the original dev VPC and staging VPC both use `10.0.0.0/16`, the original EC2 instance could not simply be routed behind the production ALB. A replacement legacy runtime was therefore created inside the staging VPC using the same application with `STORAGE_BACKEND=memory`, while the ECS service used `STORAGE_BACKEND=postgres`.
 
 ## Migration Architecture
 
@@ -215,6 +242,8 @@ Because the original dev VPC and staging VPC both use `10.0.0.0/16`, the origina
                                          v
                                    RDS PostgreSQL
 ```
+
+This was an important migration property: **both sides of the production cutover ran the same Flask application**, with the storage backend being the main behavioural difference.
 
 The existing staging ALB remained attached to the ECS service. Production added a second ECS target group rather than creating another ECS service.
 
@@ -275,7 +304,7 @@ Evidence is deliberately organised beside the environment it validates instead o
 
 ## Project Management
 
-The migration was managed through a **GitHub Projects Kanban backlog** rather than being implemented as one large change. Work was broken into issues covering the legacy baseline, containerisation, ECR, PostgreSQL integration, ECS/RDS infrastructure, CI/CD, production migration infrastructure, controlled cutover and legacy retirement.
+The migration was managed through a **GitHub Projects Kanban backlog** rather than being implemented as one large change. Work was broken into issues covering the legacy baseline, application persistence refactor, containerisation, ECR, PostgreSQL integration, ECS/RDS infrastructure, CI/CD, production migration infrastructure, controlled cutover and legacy retirement.
 
 This made the migration incremental: each phase had a clear acceptance point before the next phase was started, while the board tracked work through Ready, In Progress, In Review and Done.
 
@@ -287,6 +316,8 @@ This made the migration incremental: each phase had a clear acceptance point bef
 
 ```text
 Legacy EC2 baseline                 COMPLETE
+Persistence/storage refactor        COMPLETE
+Memory + PostgreSQL backends        COMPLETE
 Containerisation                    COMPLETE
 ECR / immutable images              COMPLETE
 ECS Fargate platform                COMPLETE
@@ -305,4 +336,4 @@ Post-cutover production validation  COMPLETE
 Legacy retirement                   FINAL CLEANUP
 ```
 
-The application has successfully moved from a **single, stateful EC2 runtime** to a **containerised ECS Fargate service with durable RDS PostgreSQL storage**, with the migration executed through an observable, approval-gated and testable production cutover process.
+The application has successfully moved from a **single, stateful EC2 runtime** to a **containerised ECS Fargate service with durable RDS PostgreSQL storage**. The migration preserved one application codebase throughout by introducing selectable memory and PostgreSQL storage backends, then executed the production move through an observable, approval-gated and testable cutover process.
